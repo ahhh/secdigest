@@ -1,9 +1,7 @@
+"""All SQLite operations. Single module — import this everywhere you need data access."""
 import sqlite3
 import threading
-import json
-from datetime import date as dt_date
-from pathlib import Path
-import config
+from secdigest import config
 
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
@@ -119,16 +117,12 @@ def init_db():
 
 def _seed_config(conn):
     for key, val in config.DB_CONFIG_DEFAULTS.items():
-        conn.execute(
-            "INSERT OR IGNORE INTO config_kv(key, value) VALUES (?, ?)",
-            (key, val)
-        )
+        conn.execute("INSERT OR IGNORE INTO config_kv(key, value) VALUES (?, ?)", (key, val))
     conn.commit()
 
 
 def _seed_prompts(conn):
-    count = conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0]
-    if count == 0:
+    if conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0] == 0:
         for p in DEFAULT_PROMPTS:
             conn.execute(
                 "INSERT INTO prompts(name, type, content) VALUES (?,?,?)",
@@ -137,7 +131,7 @@ def _seed_prompts(conn):
         conn.commit()
 
 
-# --- Config ---
+# ── Config ───────────────────────────────────────────────────────────────────
 
 def cfg_get(key: str) -> str:
     row = _get_conn().execute("SELECT value FROM config_kv WHERE key=?", (key,)).fetchone()
@@ -147,18 +141,18 @@ def cfg_get(key: str) -> str:
 def cfg_set(key: str, value: str):
     with _lock:
         _get_conn().execute(
-            "INSERT INTO config_kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, value)
+            "INSERT INTO config_kv(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
         )
         _get_conn().commit()
 
 
 def cfg_all() -> dict:
-    rows = _get_conn().execute("SELECT key, value FROM config_kv").fetchall()
-    return {r[0]: r[1] for r in rows}
+    return {r[0]: r[1] for r in _get_conn().execute("SELECT key, value FROM config_kv").fetchall()}
 
 
-# --- Newsletters ---
+# ── Newsletters ───────────────────────────────────────────────────────────────
 
 def newsletter_get_or_create(date_str: str) -> dict:
     conn = _get_conn()
@@ -168,8 +162,7 @@ def newsletter_get_or_create(date_str: str) -> dict:
     with _lock:
         conn.execute("INSERT OR IGNORE INTO newsletters(date) VALUES(?)", (date_str,))
         conn.commit()
-    row = conn.execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone()
-    return dict(row)
+    return dict(conn.execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone())
 
 
 def newsletter_get(date_str: str) -> dict | None:
@@ -181,9 +174,8 @@ def newsletter_update(id: int, **kwargs):
     if not kwargs:
         return
     fields = ", ".join(f"{k}=?" for k in kwargs)
-    vals = list(kwargs.values()) + [id]
     with _lock:
-        _get_conn().execute(f"UPDATE newsletters SET {fields} WHERE id=?", vals)
+        _get_conn().execute(f"UPDATE newsletters SET {fields} WHERE id=?", [*kwargs.values(), id])
         _get_conn().commit()
 
 
@@ -194,7 +186,12 @@ def newsletter_list(limit: int = 60) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-# --- Articles ---
+# ── Articles ──────────────────────────────────────────────────────────────────
+
+def article_get(id: int) -> dict | None:
+    row = _get_conn().execute("SELECT * FROM articles WHERE id=?", (id,)).fetchone()
+    return dict(row) if row else None
+
 
 def article_insert(newsletter_id: int, hn_id: int, title: str, url: str,
                    hn_score: int, hn_comments: int, relevance_score: float,
@@ -207,7 +204,7 @@ def article_insert(newsletter_id: int, hn_id: int, title: str, url: str,
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (newsletter_id, hn_id, title, url,
              f"https://news.ycombinator.com/item?id={hn_id}",
-             hn_score, hn_comments, relevance_score, relevance_reason, position)
+             hn_score, hn_comments, relevance_score, relevance_reason, position),
         )
         _get_conn().commit()
         return cur.lastrowid
@@ -216,7 +213,7 @@ def article_insert(newsletter_id: int, hn_id: int, title: str, url: str,
 def article_list(newsletter_id: int) -> list[dict]:
     rows = _get_conn().execute(
         "SELECT * FROM articles WHERE newsletter_id=? ORDER BY position ASC, relevance_score DESC",
-        (newsletter_id,)
+        (newsletter_id,),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -225,9 +222,8 @@ def article_update(id: int, **kwargs):
     if not kwargs:
         return
     fields = ", ".join(f"{k}=?" for k in kwargs)
-    vals = list(kwargs.values()) + [id]
     with _lock:
-        _get_conn().execute(f"UPDATE articles SET {fields} WHERE id=?", vals)
+        _get_conn().execute(f"UPDATE articles SET {fields} WHERE id=?", [*kwargs.values(), id])
         _get_conn().commit()
 
 
@@ -236,7 +232,7 @@ def article_reorder(newsletter_id: int, ordered_ids: list[int]):
         for pos, aid in enumerate(ordered_ids):
             _get_conn().execute(
                 "UPDATE articles SET position=? WHERE id=? AND newsletter_id=?",
-                (pos, aid, newsletter_id)
+                (pos, aid, newsletter_id),
             )
         _get_conn().commit()
 
@@ -248,7 +244,7 @@ def article_hn_ids(newsletter_id: int) -> set[int]:
     return {r[0] for r in rows}
 
 
-# --- Prompts ---
+# ── Prompts ───────────────────────────────────────────────────────────────────
 
 def prompt_list(type_filter: str | None = None) -> list[dict]:
     if type_filter:
@@ -273,9 +269,8 @@ def prompt_update(id: int, **kwargs):
     if not kwargs:
         return
     fields = ", ".join(f"{k}=?" for k in kwargs)
-    vals = list(kwargs.values()) + [id]
     with _lock:
-        _get_conn().execute(f"UPDATE prompts SET {fields} WHERE id=?", vals)
+        _get_conn().execute(f"UPDATE prompts SET {fields} WHERE id=?", [*kwargs.values(), id])
         _get_conn().commit()
 
 
@@ -285,11 +280,10 @@ def prompt_delete(id: int):
         _get_conn().commit()
 
 
-# --- Subscribers ---
+# ── Subscribers ───────────────────────────────────────────────────────────────
 
 def subscriber_list() -> list[dict]:
-    rows = _get_conn().execute("SELECT * FROM subscribers ORDER BY id").fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in _get_conn().execute("SELECT * FROM subscribers ORDER BY id").fetchall()]
 
 
 def subscriber_create(email: str, name: str = "") -> dict | None:
@@ -300,8 +294,17 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
             )
             _get_conn().commit()
         return dict(_get_conn().execute("SELECT * FROM subscribers WHERE id=?", (cur.lastrowid,)).fetchone())
-    except sqlite3.IntegrityError:
+    except Exception:
         return None
+
+
+def subscriber_update(id: int, **kwargs):
+    if not kwargs:
+        return
+    fields = ", ".join(f"{k}=?" for k in kwargs)
+    with _lock:
+        _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().commit()
 
 
 def subscriber_delete(id: int):
@@ -311,13 +314,12 @@ def subscriber_delete(id: int):
 
 
 def subscriber_active() -> list[dict]:
-    rows = _get_conn().execute(
+    return [dict(r) for r in _get_conn().execute(
         "SELECT * FROM subscribers WHERE active=1"
-    ).fetchall()
-    return [dict(r) for r in rows]
+    ).fetchall()]
 
 
-# --- LLM Audit ---
+# ── LLM Audit Log ─────────────────────────────────────────────────────────────
 
 def audit_log(operation: str, model: str, input_tokens: int, output_tokens: int,
               cached_tokens: int, article_id: int | None, result_snippet: str):
@@ -326,8 +328,8 @@ def audit_log(operation: str, model: str, input_tokens: int, output_tokens: int,
             """INSERT INTO llm_audit_log
                (operation, model, input_tokens, output_tokens, cached_tokens, article_id, result_snippet)
                VALUES (?,?,?,?,?,?,?)""",
-            (operation, model, input_tokens, output_tokens, cached_tokens, article_id,
-             result_snippet[:500] if result_snippet else "")
+            (operation, model, input_tokens, output_tokens, cached_tokens,
+             article_id, result_snippet[:500] if result_snippet else ""),
         )
         _get_conn().commit()
 

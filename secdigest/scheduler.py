@@ -1,20 +1,19 @@
-"""APScheduler daily job: fetch + summarize + optional auto-send."""
+"""APScheduler daily job: fetch → summarize → optional auto-send."""
 import asyncio
 from datetime import date as dt_date
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-import db
-import fetcher
-import summarizer
-import mailer
+from secdigest import db
+from secdigest import fetcher, summarizer, mailer
 
 _scheduler: AsyncIOScheduler | None = None
 
 
 async def daily_job():
     today = dt_date.today().isoformat()
-    print(f"[scheduler] daily job starting for {today}")
+    print(f"[scheduler] daily job for {today}")
     try:
         await fetcher.run_fetch(today)
     except Exception as e:
@@ -26,8 +25,8 @@ async def daily_job():
         return
 
     try:
-        count = summarizer.summarize_newsletter(newsletter["id"])
-        print(f"[scheduler] summarized {count} articles")
+        n = summarizer.summarize_newsletter(newsletter["id"])
+        print(f"[scheduler] summarized {n} articles")
     except Exception as e:
         print(f"[scheduler] summarize error: {e}")
 
@@ -36,19 +35,17 @@ async def daily_job():
         print(f"[scheduler] auto-send: {msg}")
 
 
-def _parse_time(fetch_time: str) -> tuple[int, int]:
+def _parse_time(t: str) -> tuple[int, int]:
     try:
-        h, m = fetch_time.split(":")
+        h, m = t.split(":")
         return int(h), int(m)
     except Exception:
         return 7, 0
 
 
-def start_scheduler():
+def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
-    fetch_time = db.cfg_get("fetch_time") or "07:00"
-    hour, minute = _parse_time(fetch_time)
-
+    hour, minute = _parse_time(db.cfg_get("fetch_time") or "07:00")
     _scheduler = AsyncIOScheduler()
     _scheduler.add_job(
         daily_job,
@@ -57,21 +54,14 @@ def start_scheduler():
         replace_existing=True,
     )
     _scheduler.start()
-    print(f"[scheduler] started — daily job at {hour:02d}:{minute:02d}")
+    print(f"[scheduler] daily fetch at {hour:02d}:{minute:02d}")
     return _scheduler
 
 
 def reschedule(fetch_time: str):
-    """Update the daily job trigger after settings change."""
-    global _scheduler
-    if not _scheduler:
-        return
-    hour, minute = _parse_time(fetch_time)
-    _scheduler.reschedule_job(
-        "daily_fetch",
-        trigger=CronTrigger(hour=hour, minute=minute),
-    )
-    print(f"[scheduler] rescheduled to {hour:02d}:{minute:02d}")
+    if _scheduler:
+        hour, minute = _parse_time(fetch_time)
+        _scheduler.reschedule_job("daily_fetch", trigger=CronTrigger(hour=hour, minute=minute))
 
 
 def stop_scheduler():
