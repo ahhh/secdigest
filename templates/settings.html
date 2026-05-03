@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — Settings{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Settings</h1>
+</div>
+
+<form action="/settings" method="post">
+<div class="settings-grid">
+
+  <div class="settings-section">
+    <div class="section-label">Schedule</div>
+    <div class="form-group">
+      <label class="label">Daily fetch time (24h, local)</label>
+      <input type="text" name="fetch_time" value="{{ cfg.fetch_time }}"
+             class="input input-sm" placeholder="07:00">
+    </div>
+    <div class="form-group">
+      <label class="label">Min HN score to consider</label>
+      <input type="number" name="hn_min_score" value="{{ cfg.hn_min_score }}"
+             class="input input-sm" min="1" max="1000">
+    </div>
+    <div class="form-group">
+      <label class="label">Max articles per newsletter</label>
+      <input type="number" name="max_articles" value="{{ cfg.max_articles }}"
+             class="input input-sm" min="1" max="50">
+    </div>
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="auto_send" {% if cfg.auto_send == '1' %}checked{% endif %}>
+        Auto-send newsletter after daily fetch
+      </label>
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <div class="section-label">SMTP Email</div>
+    <div class="form-group">
+      <label class="label">SMTP Host</label>
+      <input type="text" name="smtp_host" value="{{ cfg.smtp_host }}"
+             class="input" placeholder="smtp.gmail.com">
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:0 0 100px">
+        <label class="label">Port</label>
+        <input type="number" name="smtp_port" value="{{ cfg.smtp_port }}"
+               class="input" placeholder="587">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="label">SMTP User</label>
+        <input type="text" name="smtp_user" value="{{ cfg.smtp_user }}"
+               class="input" placeholder="you@gmail.com">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="label">SMTP Password (leave blank to keep current)</label>
+      <input type="password" name="smtp_pass" class="input" placeholder="••••••••">
+    </div>
+    <div class="form-group">
+      <label class="label">From address</label>
+      <input type="text" name="smtp_from" value="{{ cfg.smtp_from }}"
+             class="input" placeholder="SecDigest &lt;you@example.com&gt;">
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <div class="section-label">Security</div>
+    <div class="form-group">
+      <label class="label">New password (leave blank to keep current)</label>
+      <input type="password" name="new_password" class="input" placeholder="••••••••"
+             autocomplete="new-password">
+    </div>
+  </div>
+
+</div>
+
+<div style="margin-top:24px">
+  <button type="submit" class="btn btn-primary">Save Settings</button>
+</div>
+</form>
+
+<div class="section-divider"></div>
+<div class="section-label">LLM Audit Log (last 20)</div>
+
+<table class="table table-sm">
+  <thead>
+    <tr><th>Time</th><th>Op</th><th>Model</th><th>In</th><th>Cached</th><th>Out</th><th>Snippet</th></tr>
+  </thead>
+  <tbody>
+    {% for row in audit %}
+    <tr>
+      <td class="mono text-muted">{{ row.timestamp[:16] }}</td>
+      <td><span class="badge badge-{{ 'green' if row.operation == 'curation' else 'blue' }}">{{ row.operation }}</span></td>
+      <td class="mono text-muted">{{ row.model.split('-')[2] if '-' in row.model else row.model }}</td>
+      <td class="mono">{{ row.input_tokens }}</td>
+      <td class="mono text-muted">{{ row.cached_tokens }}</td>
+      <td class="mono">{{ row.output_tokens }}</td>
+      <td class="text-muted" style="font-size:0.8em;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        {{ row.result_snippet or '—' }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}

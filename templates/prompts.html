@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — Prompts{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Curation Prompts</h1>
+  <p class="page-sub">These prompts are sent to Claude to score and summarize articles.
+     Changes take effect on the next fetch.</p>
+</div>
+
+<div class="section-label">Active Prompts</div>
+
+{% for p in prompts %}
+<div class="prompt-card {% if not p.active %}prompt-inactive{% endif %}" id="prompt-{{ p.id }}">
+  <div class="prompt-header">
+    <div>
+      <span class="prompt-name">{{ p.name }}</span>
+      <span class="badge badge-{{ 'green' if p.type == 'curation' else 'blue' }}">{{ p.type }}</span>
+      {% if not p.active %}<span class="badge badge-gray">inactive</span>{% endif %}
+    </div>
+    <div class="btn-group">
+      <form action="/prompts/{{ p.id }}/toggle" method="post" style="display:inline">
+        <button class="btn btn-sm btn-ghost">
+          {{ '⏸ Disable' if p.active else '▶ Enable' }}
+        </button>
+      </form>
+      <button class="btn btn-sm btn-ghost" onclick="togglePromptEdit({{ p.id }})">✎ Edit</button>
+      <form action="/prompts/{{ p.id }}/delete" method="post" style="display:inline"
+            onsubmit="return confirm('Delete this prompt?')">
+        <button class="btn btn-sm btn-ghost btn-danger">✕</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="prompt-content" id="prompt-view-{{ p.id }}">
+    <pre class="prompt-text">{{ p.content }}</pre>
+  </div>
+
+  <div class="prompt-edit-form" id="prompt-edit-{{ p.id }}" style="display:none">
+    <form action="/prompts/{{ p.id }}/update" method="post">
+      <input type="text" name="name" value="{{ p.name }}" class="input" style="margin-bottom:8px">
+      <textarea name="content" class="textarea" rows="6">{{ p.content }}</textarea>
+      <div class="btn-group" style="margin-top:8px">
+        <button type="submit" class="btn btn-sm btn-primary">Save</button>
+        <button type="button" class="btn btn-sm btn-ghost"
+                onclick="togglePromptEdit({{ p.id }})">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+<div class="section-divider"></div>
+<div class="section-label">Add New Prompt</div>
+
+<div class="form-card">
+  <form action="/prompts" method="post">
+    <div class="form-row">
+      <div class="form-group" style="flex:1">
+        <label class="label">Name</label>
+        <input type="text" name="name" class="input" placeholder="e.g. Focus on cloud security" required>
+      </div>
+      <div class="form-group" style="flex:0 0 160px">
+        <label class="label">Type</label>
+        <select name="type" class="input">
+          <option value="curation">curation</option>
+          <option value="summary">summary</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="label">Prompt content</label>
+      <textarea name="content" class="textarea" rows="5" required
+        placeholder="Curation: instructions for scoring articles 0-10&#10;Summary: instructions for writing article summaries"></textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">Add Prompt</button>
+  </form>
+</div>
+
+<script>
+function togglePromptEdit(id) {
+  const view = document.getElementById('prompt-view-' + id);
+  const edit = document.getElementById('prompt-edit-' + id);
+  const hidden = view.style.display === 'none';
+  view.style.display = hidden ? 'block' : 'none';
+  edit.style.display = hidden ? 'none' : 'block';
+}
+</script>
+{% endblock %}

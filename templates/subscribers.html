@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — Subscribers{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Subscribers</h1>
+  <p class="page-sub">{{ subscribers | selectattr('active') | list | length }} active
+    · {{ subscribers | length }} total</p>
+</div>
+
+<div class="form-card" style="max-width:480px">
+  <div class="section-label">Add Subscriber</div>
+  <form action="/subscribers" method="post">
+    <div class="form-row">
+      <div class="form-group" style="flex:1">
+        <input type="email" name="email" class="input" placeholder="email@example.com" required>
+      </div>
+      <div class="form-group" style="flex:1">
+        <input type="text" name="name" class="input" placeholder="Name (optional)">
+      </div>
+      <button type="submit" class="btn btn-primary">Add</button>
+    </div>
+  </form>
+</div>
+
+{% if not subscribers %}
+<div class="empty-state">
+  <div class="empty-icon">◎</div>
+  <p>No subscribers yet.</p>
+</div>
+{% else %}
+<table class="table">
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Name</th>
+      <th>Status</th>
+      <th>Added</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in subscribers %}
+    <tr class="{% if not s.active %}row-muted{% endif %}">
+      <td class="mono">{{ s.email }}</td>
+      <td>{{ s.name or '—' }}</td>
+      <td>
+        <span class="badge badge-{{ 'green' if s.active else 'gray' }}">
+          {{ 'active' if s.active else 'paused' }}
+        </span>
+      </td>
+      <td class="mono text-muted">{{ s.created_at[:10] }}</td>
+      <td>
+        <div class="btn-group">
+          <form action="/subscribers/{{ s.id }}/toggle" method="post" style="display:inline">
+            <button class="btn btn-sm btn-ghost">
+              {{ 'Pause' if s.active else 'Resume' }}
+            </button>
+          </form>
+          <form action="/subscribers/{{ s.id }}/delete" method="post" style="display:inline"
+                onsubmit="return confirm('Remove {{ s.email }}?')">
+            <button class="btn btn-sm btn-ghost btn-danger">✕</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — Archive{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Archive</h1>
+</div>
+
+{% if not newsletters %}
+<div class="empty-state">
+  <div class="empty-icon">◎</div>
+  <p>No newsletters yet. <a href="/">Go fetch some articles.</a></p>
+</div>
+{% else %}
+<div class="archive-grid">
+  {% for n in newsletters %}
+  <a href="/day/{{ n.date }}" class="archive-card">
+    <div class="archive-date">{{ n.date }}</div>
+    <div class="archive-meta">
+      <span class="badge badge-{{ 'blue' if n.status == 'sent' else ('green' if n.status == 'published' else 'gray') }}">
+        {{ n.status }}
+      </span>
+      <span class="archive-count">{{ counts.get(n.id, 0) }} articles</span>
+    </div>
+    {% if n.sent_at %}
+    <div class="archive-sent">Sent {{ n.sent_at[:16] }}</div>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

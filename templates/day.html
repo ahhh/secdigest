@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — {{ date_str }}{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-title">
+      {{ date_str }}
+      {% if is_today %}<span class="badge badge-green">Today</span>{% endif %}
+      {% if newsletter %}
+        <span class="badge badge-{{ 'blue' if newsletter.status == 'sent' else 'gray' }}">
+          {{ newsletter.status }}
+        </span>
+      {% endif %}
+    </h1>
+    <p class="page-sub">{{ articles | selectattr('included') | list | length }} articles included
+      {% if articles %} · {{ articles | length }} total{% endif %}
+    </p>
+  </div>
+  <div class="btn-group">
+    <form action="/day/{{ date_str }}/fetch" method="post" style="display:inline">
+      <button class="btn btn-outline">↓ Fetch HN</button>
+    </form>
+    {% if articles %}
+    <form action="/day/{{ date_str }}/summarize" method="post" style="display:inline">
+      <button class="btn btn-outline">✦ Summarize</button>
+    </form>
+    <form action="/day/{{ date_str }}/send" method="post" style="display:inline"
+          onsubmit="return confirm('Send to all active subscribers?')">
+      <button class="btn btn-primary">✉ Send Newsletter</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if not articles %}
+<div class="empty-state">
+  <div class="empty-icon">◎</div>
+  <p>No articles yet for {{ date_str }}.</p>
+  <form action="/day/{{ date_str }}/fetch" method="post">
+    <button class="btn btn-primary">Fetch from Hacker News</button>
+  </form>
+</div>
+{% else %}
+
+<div class="reorder-hint">Drag articles to reorder ↕</div>
+
+<form id="reorder-form" action="/day/{{ date_str }}/reorder" method="post">
+  <div id="article-list" class="article-list">
+    {% for a in articles %}
+    <input type="hidden" name="order" value="{{ a.id }}" class="order-input" data-id="{{ a.id }}">
+    <div class="article-card {% if not a.included %}article-excluded{% endif %}"
+         data-id="{{ a.id }}">
+      <div class="article-drag-handle">⠿</div>
+      <div class="article-body">
+        <div class="article-meta">
+          <span class="relevance-score" title="Security relevance">▲ {{ "%.1f"|format(a.relevance_score) }}</span>
+          <span class="hn-score">HN {{ a.hn_score }}</span>
+          <span class="hn-comments">{{ a.hn_comments }} comments</span>
+          {% if a.relevance_reason %}
+          <span class="relevance-reason" title="{{ a.relevance_reason }}">ⓘ</span>
+          {% endif %}
+        </div>
+
+        <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">
+          {{ a.title }}
+        </a>
+        <div class="article-links">
+          <a href="{{ a.hn_url }}" target="_blank" class="link-muted">HN discussion →</a>
+          {% if a.url %}<a href="{{ a.url }}" target="_blank" class="link-muted">Source →</a>{% endif %}
+        </div>
+
+        <div class="summary-section" id="summary-{{ a.id }}">
+          {% if a.summary %}
+          <p class="summary-text" id="summary-text-{{ a.id }}">{{ a.summary }}</p>
+          {% else %}
+          <p class="summary-placeholder">No summary — click Summarize or edit manually.</p>
+          {% endif %}
+
+          <div class="summary-edit" id="edit-{{ a.id }}" style="display:none">
+            <form action="/day/{{ date_str }}/article/{{ a.id }}/summary" method="post">
+              <textarea name="summary" class="textarea" rows="4">{{ a.summary or '' }}</textarea>
+              <div class="btn-group" style="margin-top:8px">
+                <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                <button type="button" class="btn btn-sm btn-ghost"
+                        onclick="toggleEdit({{ a.id }})">Cancel</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div class="article-actions">
+          <button class="btn btn-sm btn-ghost" onclick="toggleEdit({{ a.id }})">✎ Edit</button>
+          <form action="/day/{{ date_str }}/article/{{ a.id }}/regenerate" method="post" style="display:inline">
+            <button class="btn btn-sm btn-ghost">↺ Regenerate</button>
+          </form>
+          <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
+            <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
+              {% if a.included %}✕ Exclude{% else %}+ Include{% endif %}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</form>
+
+{% endif %}
+
+<script>
+function toggleEdit(id) {
+  const edit = document.getElementById('edit-' + id);
+  edit.style.display = edit.style.display === 'none' ? 'block' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const list = document.getElementById('article-list');
+  if (!list) return;
+  Sortable.create(list, {
+    handle: '.article-drag-handle',
+    animation: 150,
+    onEnd: function() {
+      const cards = list.querySelectorAll('.article-card');
+      const inputs = list.querySelectorAll('.order-input');
+      // rebuild hidden inputs to match new order
+      const form = document.getElementById('reorder-form');
+      form.querySelectorAll('input[name=order]').forEach(el => el.remove());
+      cards.forEach(card => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'order';
+        input.value = card.dataset.id;
+        form.appendChild(input);
+      });
+      form.submit();
+    }
+  });
+});
+</script>
+{% endblock %}

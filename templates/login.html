@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SecDigest — Login</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body style="display:flex;align-items:center;justify-content:center;min-height:100vh;">
+  <div class="login-box">
+    <div class="login-brand">SecDigest</div>
+    <p class="login-sub">Daily Security Intelligence</p>
+    {% if error %}
+    <div class="flash flash-error">{{ error }}</div>
+    {% endif %}
+    <form action="/login" method="post" class="login-form">
+      <input type="password" name="password" placeholder="Password"
+             class="input" autofocus autocomplete="current-password">
+      <button type="submit" class="btn btn-primary" style="width:100%">Enter</button>
+    </form>
+  </div>
+</body>
+</html>
