@@ -1,11 +1,17 @@
 """Auth helpers shared across route modules."""
 from fastapi import Request
 from fastapi.responses import RedirectResponse
-from passlib.context import CryptContext
+import bcrypt
 
 from secdigest import db
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 def is_authed(request: Request) -> bool:
@@ -19,7 +25,7 @@ def redirect_login() -> RedirectResponse:
 def ensure_default_password():
     """Write the default password hash on first run if none is configured."""
     if not db.cfg_get("password_hash"):
-        db.cfg_set("password_hash", pwd_ctx.hash("secdigest"))
+        db.cfg_set("password_hash", hash_password("secdigest"))
         print("\n" + "!" * 60)
         print("  DEFAULT PASSWORD: secdigest")
         print("  Change it immediately at /settings")

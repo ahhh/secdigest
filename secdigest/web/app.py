@@ -9,7 +9,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from secdigest import config, db
 from secdigest.web import templates
-from secdigest.web.auth import is_authed, pwd_ctx, ensure_default_password
+from secdigest.web.auth import is_authed, verify_password, ensure_default_password
 from secdigest.web.routes import newsletter, prompts, subscribers, settings
 import secdigest.scheduler as sched
 
@@ -45,7 +45,7 @@ async def login_page(request: Request, error: str = ""):
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
     ph = db.cfg_get("password_hash")
-    if ph and pwd_ctx.verify(password, ph):
+    if ph and verify_password(password, ph):
         request.session["authenticated"] = True
         return RedirectResponse("/", status_code=302)
     return templates.TemplateResponse(
