@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from secdigest import db
 from secdigest.web import templates
-from secdigest.web.auth import is_authed, redirect_login, pwd_ctx
+from secdigest.web.auth import is_authed, redirect_login, hash_password
 import secdigest.scheduler as sched
 
 router = APIRouter()
@@ -38,7 +38,7 @@ async def save_settings(request: Request):
     db.cfg_set("auto_send", "1" if form.get("auto_send") else "0")
 
     if form.get("new_password"):
-        db.cfg_set("password_hash", pwd_ctx.hash(form["new_password"]))
+        db.cfg_set("password_hash", hash_password(form["new_password"]))
 
     sched.reschedule(db.cfg_get("fetch_time"))
     return RedirectResponse("/settings?msg=Saved", status_code=302)
