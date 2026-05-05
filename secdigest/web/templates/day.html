@@ -366,8 +366,8 @@ function appendFields(form, fields) {
         </div>
 
         <div class="article-actions">
-          <button class="btn btn-sm btn-ghost" onclick="toggleEdit({{ a.id }})">&#x270E; Edit</button>
-          <button class="btn btn-sm btn-ghost" id="regen-btn-{{ a.id }}"
+          <button type="button" class="btn btn-sm btn-ghost" onclick="toggleEdit({{ a.id }})">&#x270E; Edit</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="regen-btn-{{ a.id }}"
                   onclick="triggerRegenerate({{ a.id }})">&#x21BA; Regenerate</button>
           <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
             <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
