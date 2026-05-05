@@ -475,6 +475,20 @@ def article_hn_ids(newsletter_id: int) -> set[int]:
     return {r[0] for r in rows}
 
 
+def article_all_hn_ids() -> set[int]:
+    rows = _get_conn().execute(
+        "SELECT hn_id FROM articles WHERE hn_id IS NOT NULL"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def article_all_urls() -> set[str]:
+    rows = _get_conn().execute(
+        "SELECT url FROM articles WHERE url IS NOT NULL AND url != ''"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 def prompt_list(type_filter: str | None = None) -> list[dict]:

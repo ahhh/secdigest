@@ -35,21 +35,20 @@ async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict | list | None
         return None
 
 
-async def fetch_top_stories(limit: int = 200) -> list[dict]:
-    """Return top HN stories meeting the configured minimum score."""
-    min_score = int(db.cfg_get("hn_min_score") or 50)
-    async with httpx.AsyncClient() as client:
-        ids = await _fetch_json(client, f"{HN_BASE}/topstories.json")
-        if not ids:
-            return []
+async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
+                      limit: int, min_score: int) -> list[dict]:
+    """Fetch and filter stories from a single HN feed endpoint."""
+    ids = await _fetch_json(client, f"{HN_BASE}/{endpoint}.json")
+    if not ids:
+        return []
 
-        sem = asyncio.Semaphore(20)
+    sem = asyncio.Semaphore(20)
 
-        async def fetch_one(sid):
-            async with sem:
-                return await _fetch_json(client, f"{HN_BASE}/item/{sid}.json")
+    async def fetch_one(sid):
+        async with sem:
+            return await _fetch_json(client, f"{HN_BASE}/item/{sid}.json")
 
-        items = await asyncio.gather(*[fetch_one(sid) for sid in ids[:limit]])
+    items = await asyncio.gather(*[fetch_one(sid) for sid in ids[:limit]])
 
     return [
         {
@@ -66,6 +65,25 @@ async def fetch_top_stories(limit: int = 200) -> list[dict]:
         and not item.get("deleted")
         and (item.get("score") or 0) >= min_score
     ]
+
+
+async def fetch_all_candidates() -> list[dict]:
+    """Fetch top and new HN stories, merged and deduplicated by ID."""
+    min_score = int(db.cfg_get("hn_min_score") or 50)
+    async with httpx.AsyncClient() as client:
+        top, new = await asyncio.gather(
+            _fetch_feed(client, "topstories", 200, min_score),
+            _fetch_feed(client, "newstories", 100, 5),
+        )
+
+    seen: set[int] = set()
+    combined: list[dict] = []
+    for story in top + new:
+        if story["id"] not in seen:
+            seen.add(story["id"])
+            combined.append(story)
+
+    return combined
 
 
 _KW_HIGH = re.compile(
@@ -98,23 +116,21 @@ def _keyword_score(articles: list[dict]) -> list[dict]:
     return results
 
 
-def _score_batch(articles: list[dict], custom_instructions: str) -> list[dict]:
-    """Call Claude to score one batch of articles. Returns [{id, score, reason}]."""
+def _score_article(article: dict, custom_instructions: str) -> dict:
+    """Call Claude to score a single article. Returns {id, score, reason}."""
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or None)
 
-    article_list = [
-        {"id": a["id"], "title": a["title"], "url": a.get("url", "")}
-        for a in articles
-    ]
     user_prompt = (
         f"{custom_instructions}\n\n"
-        f"Articles:\n{json.dumps(article_list, indent=2)}\n\n"
-        'Return JSON array: [{"id": <hn_id>, "score": <0-10>, "reason": "<one sentence>"}]'
+        f"Article ID: {article['id']}\n"
+        f"Title: {article['title']}\n"
+        f"URL: {article.get('url', '')}\n\n"
+        f'Return JSON: {{"id": {article["id"]}, "score": <0-10>, "reason": "<one sentence>"}}'
     )
 
     resp = client.messages.create(
         model=MODEL,
-        max_tokens=1024,
+        max_tokens=256,
         system=[{"type": "text", "text": CURATION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     )
@@ -137,20 +153,20 @@ def _score_batch(articles: list[dict], custom_instructions: str) -> list[dict]:
 
 
 def score_articles(articles: list[dict]) -> list[dict]:
-    """Score all articles in batches of 25. Adds relevance_score/reason to each."""
+    """Score each article individually via Claude. Adds relevance_score/reason to each."""
     prompts = db.prompt_list(type_filter="curation")
     custom = "\n\n".join(p["content"] for p in prompts if p["active"]) or "Use the scoring guide."
 
     scores: dict[int, dict] = {}
     llm_error: str | None = None
 
-    for i in range(0, len(articles), 25):
+    for article in articles:
         try:
-            for item in _score_batch(articles[i:i + 25], custom):
-                scores[item["id"]] = item
+            item = _score_article(article, custom)
+            scores[item["id"]] = item
         except Exception as e:
             llm_error = str(e)
-            print(f"[fetcher] curation batch error: {e}")
+            print(f"[fetcher] curation error for article {article['id']}: {e}")
 
     if llm_error:
         db.cfg_set("last_curation_error", llm_error)
@@ -181,10 +197,15 @@ async def run_fetch(date_str: str | None = None) -> dict:
         print(f"[fetcher] {date_str} already has {len(existing_ids)} articles, skipping")
         return newsletter
 
-    print(f"[fetcher] fetching HN for {date_str}...")
-    stories = await fetch_top_stories()
-    new_stories = [s for s in stories if s["id"] not in existing_ids]
-    print(f"[fetcher] {len(stories)} stories, {len(new_stories)} new")
+    print(f"[fetcher] fetching HN top + new for {date_str}...")
+    candidates = await fetch_all_candidates()
+
+    historical_urls = db.article_all_urls()
+    new_stories = [
+        s for s in candidates
+        if not s["url"] or s["url"] not in historical_urls
+    ]
+    print(f"[fetcher] {len(candidates)} candidates, {len(new_stories)} after dedup")
 
     if not new_stories:
         return newsletter
