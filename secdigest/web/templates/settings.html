@@ -72,6 +72,12 @@
       <input type="text" name="smtp_from" value="{{ cfg.smtp_from }}"
              class="input" placeholder="SecDigest &lt;you@example.com&gt;">
     </div>
+    <p class="text-muted" style="font-size:0.8em;line-height:1.6;margin-top:4px;">
+      <strong style="color:var(--text)">Gmail:</strong>
+      host <code>smtp.gmail.com</code> · port <code>587</code> (STARTTLS) or <code>465</code> (SSL) ·
+      use an <strong>App Password</strong> — regular passwords are rejected by Google.<br>
+      App Passwords are 16 characters. Enter them <em>without</em> spaces even though Google displays them with spaces.
+    </p>
   </div>
 
   <div class="settings-section">

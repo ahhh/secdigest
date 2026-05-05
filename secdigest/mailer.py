@@ -1,5 +1,6 @@
 """Send newsletter emails via SMTP."""
 import smtplib
+import ssl
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -106,12 +107,26 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
 
+    port = int(cfg.get("smtp_port", 587))
+    smtp_user = cfg.get("smtp_user", "")
+    # Strip spaces — Gmail App Passwords are displayed with spaces but must be used without
+    smtp_pass = cfg.get("smtp_pass", "").replace(" ", "")
+    tls_context = ssl.create_default_context()
+
     sent, errors = 0, []
     try:
-        with smtplib.SMTP(smtp_host, int(cfg.get("smtp_port", 587))) as server:
-            server.starttls()
-            if cfg.get("smtp_user"):
-                server.login(cfg["smtp_user"], cfg.get("smtp_pass", ""))
+        if port == 465:
+            _server = smtplib.SMTP_SSL(smtp_host, port, context=tls_context)
+        else:
+            _server = smtplib.SMTP(smtp_host, port)
+
+        with _server as server:
+            server.ehlo()
+            if port != 465:
+                server.starttls(context=tls_context)
+                server.ehlo()
+            if smtp_user:
+                server.login(smtp_user, smtp_pass)
             for sub in subscribers:
                 token = sub.get("unsubscribe_token", "")
                 unsub_url = f"{base_url}/unsubscribe/{token}" if token else ""
