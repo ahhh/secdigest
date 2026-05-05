@@ -63,7 +63,7 @@ async def save_settings(request: Request):
             db.cfg_set(field, form[field])
 
     if form.get("smtp_pass"):
-        db.cfg_set("smtp_pass", form["smtp_pass"].replace(" ", ""))
+        db.cfg_set("smtp_pass", form["smtp_pass"])
 
     db.cfg_set("auto_send", "1" if form.get("auto_send") else "0")
 
@@ -83,7 +83,7 @@ async def test_smtp(request: Request):
     host = cfg.get("smtp_host", "")
     port = int(cfg.get("smtp_port", 587))
     user = cfg.get("smtp_user", "")
-    password = cfg.get("smtp_pass", "").replace(" ", "")
+    password = cfg.get("smtp_pass", "")
     steps = []
 
     def step(label, ok, msg):

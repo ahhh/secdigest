@@ -109,8 +109,7 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
 
     port = int(cfg.get("smtp_port", 587))
     smtp_user = cfg.get("smtp_user", "")
-    # Strip spaces — Gmail App Passwords are displayed with spaces but must be used without
-    smtp_pass = cfg.get("smtp_pass", "").replace(" ", "")
+    smtp_pass = cfg.get("smtp_pass", "")
     tls_context = ssl.create_default_context()
 
     sent, errors = 0, []
