@@ -18,29 +18,180 @@
     </p>
   </div>
   <div class="btn-group">
+    {% if view == 'curator' %}
     <form action="/day/{{ date_str }}/fetch" method="post" style="display:inline">
-      <button class="btn btn-outline">↓ Fetch HN</button>
+      <button class="btn btn-outline">&#x2193; Fetch HN</button>
     </form>
     {% if articles %}
     <form action="/day/{{ date_str }}/summarize" method="post" style="display:inline">
-      <button class="btn btn-outline">✦ Summarize</button>
+      <button class="btn btn-outline">&#x2726; Summarize</button>
     </form>
     <form action="/day/{{ date_str }}/send" method="post" style="display:inline"
           onsubmit="return confirm('Send to all active subscribers?')">
-      <button class="btn btn-primary">✉ Send Newsletter</button>
+      <button class="btn btn-primary">&#x2709; Send Newsletter</button>
+    </form>
+    {% endif %}
+    {% else %}
+    <form action="/day/{{ date_str }}/send" method="post" style="display:inline"
+          onsubmit="return confirm('Send to all active subscribers?')">
+      <button class="btn btn-primary">&#x2709; Send Newsletter</button>
     </form>
     {% endif %}
   </div>
 </div>
 
+<!-- View toggle tabs -->
+<div class="view-tabs">
+  <a href="/day/{{ date_str }}" class="view-tab {% if view == 'curator' %}active{% endif %}">&#x25C8; Curator</a>
+  <a href="/day/{{ date_str }}?view=builder" class="view-tab {% if view == 'builder' %}active{% endif %}">&#x2709; Email Builder</a>
+</div>
+
+{% if view == 'builder' %}
+
+<!-- EMAIL BUILDER -->
+<div class="builder-layout">
+
+  <!-- Left sidebar -->
+  <div class="builder-sidebar">
+
+    <div class="builder-section">
+      <div class="section-label">Template</div>
+      <div class="tmpl-list" id="tmpl-list">
+        {% for t in email_templates %}
+        <div class="tmpl-card {% if t.id == active_template_id %}active{% endif %}"
+             id="tmpl-card-{{ t.id }}"
+             onclick="selectTemplate({{ t.id }})">
+          <div class="tmpl-card-name">{{ t.name }}</div>
+          {% if t.description %}<div class="tmpl-card-desc">{{ t.description }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      <a href="/email-templates" class="btn btn-ghost btn-sm" style="margin-top:8px;width:100%">
+        &#x2699; Manage Templates
+      </a>
+    </div>
+
+    <div class="builder-section">
+      <form action="/day/{{ date_str }}/set-template" method="post" id="tmpl-form">
+        <input type="hidden" name="template_id" id="tmpl-form-id" value="{{ active_template_id or '' }}">
+        <div class="form-group">
+          <label class="label">Subject line</label>
+          <input type="text" name="subject" id="tmpl-subject" class="input"
+                 value="{{ active_subject }}"
+                 placeholder="SecDigest — {{ date_str }}">
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm" style="width:100%">
+          &#x2713; Save Template Choice
+        </button>
+      </form>
+    </div>
+
+    <div class="builder-section">
+      <button class="btn btn-ghost btn-sm" style="width:100%" onclick="toggleTemplateEditor()">
+        &#x270E; Edit Template HTML
+      </button>
+      <div id="tmpl-editor" style="display:none;margin-top:12px;">
+        <form id="tmpl-save-form" action="/email-templates/1/save" method="post">
+          <div class="form-group">
+            <label class="label">Name</label>
+            <input type="text" name="name" id="edit-name" class="input input-sm">
+          </div>
+          <div class="form-group">
+            <label class="label">Wrapper HTML</label>
+            <textarea name="html" id="edit-html" class="textarea" rows="8"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="label">Article HTML</label>
+            <textarea name="article_html" id="edit-article-html" class="textarea" rows="6"></textarea>
+          </div>
+          <!-- keep other fields hidden so the save form is complete -->
+          <input type="hidden" name="description" id="edit-description">
+          <input type="hidden" name="subject" id="edit-subject-hidden">
+          <div class="btn-group" style="margin-top:8px;">
+            <button type="submit" class="btn btn-primary btn-sm">Save Template</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="toggleTemplateEditor()">Cancel</button>
+          </div>
+        </form>
+        <p id="edit-builtin-note" class="text-muted" style="font-size:.8em;margin-top:6px;display:none;">
+          Built-in template — saving will modify it permanently.
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right preview -->
+  <div class="builder-preview">
+    <div class="builder-preview-header">
+      <span class="text-muted" style="font-size:.85em;">Preview</span>
+      <button class="btn btn-ghost btn-sm" onclick="reloadPreview()">&#x21BA; Refresh</button>
+    </div>
+    <iframe id="email-preview"
+            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}"
+            class="preview-frame"
+            frameborder="0"
+            title="Email preview"></iframe>
+  </div>
+
+</div>
+
+<script>
+const dateStr = '{{ date_str }}';
+let currentTemplateId = {{ active_template_id or 'null' }};
+
+function selectTemplate(id) {
+  document.querySelectorAll('.tmpl-card').forEach(c => c.classList.remove('active'));
+  const card = document.getElementById('tmpl-card-' + id);
+  if (card) card.classList.add('active');
+  document.getElementById('tmpl-form-id').value = id;
+  currentTemplateId = id;
+  reloadPreview();
+  // Load template data into editor if open
+  const editor = document.getElementById('tmpl-editor');
+  if (editor.style.display !== 'none') loadTemplateIntoEditor(id);
+}
+
+function reloadPreview() {
+  const frame = document.getElementById('email-preview');
+  frame.src = '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '');
+}
+
+function toggleTemplateEditor() {
+  const editor = document.getElementById('tmpl-editor');
+  const open = editor.style.display !== 'none';
+  editor.style.display = open ? 'none' : 'block';
+  if (!open && currentTemplateId) loadTemplateIntoEditor(currentTemplateId);
+}
+
+function loadTemplateIntoEditor(id) {
+  fetch('/email-templates/' + id + '/json')
+    .then(r => r.json())
+    .then(t => {
+      document.getElementById('edit-name').value = t.name || '';
+      document.getElementById('edit-html').value = t.html || '';
+      document.getElementById('edit-article-html').value = t.article_html || '';
+      document.getElementById('edit-description').value = t.description || '';
+      document.getElementById('edit-subject-hidden').value = t.subject || '';
+      // Update form action to save to this template
+      document.getElementById('tmpl-save-form').action = '/email-templates/' + id + '/save';
+      const note = document.getElementById('edit-builtin-note');
+      note.style.display = t.is_builtin ? 'block' : 'none';
+    });
+}
+</script>
+
+{% else %}
+
+<!-- CURATOR -->
+
 {% if not articles %}
 <div class="empty-state">
   {% if fetching %}
-  <div class="empty-icon">⟳</div>
+  <div class="empty-icon">&#x27F3;</div>
   <p>Fetching and scoring articles from Hacker News&hellip;</p>
   <p class="text-muted" style="font-size:0.85em">This takes about a minute while articles are rated for security relevance.</p>
   {% else %}
-  <div class="empty-icon">◎</div>
+  <div class="empty-icon">&#x25CE;</div>
   <p>No articles yet for {{ date_str }}.</p>
   <form action="/day/{{ date_str }}/fetch" method="post">
     <button class="btn btn-primary">Fetch from Hacker News</button>
@@ -52,7 +203,7 @@
 {% endif %}
 {% else %}
 
-<div class="reorder-hint">Drag articles to reorder ↕</div>
+<div class="reorder-hint">Drag articles to reorder &#x2195;</div>
 
 <form id="reorder-form" action="/day/{{ date_str }}/reorder" method="post">
   <div id="article-list" class="article-list">
@@ -60,14 +211,14 @@
     <input type="hidden" name="order" value="{{ a.id }}" class="order-input" data-id="{{ a.id }}">
     <div class="article-card {% if not a.included %}article-excluded{% endif %}"
          data-id="{{ a.id }}">
-      <div class="article-drag-handle">⠿</div>
+      <div class="article-drag-handle">&#x28BF;</div>
       <div class="article-body">
         <div class="article-meta">
-          <span class="relevance-score" title="Security relevance">▲ {{ "%.1f"|format(a.relevance_score) }}</span>
+          <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
           <span class="hn-score">HN {{ a.hn_score }}</span>
           <span class="hn-comments">{{ a.hn_comments }} comments</span>
           {% if a.relevance_reason %}
-          <span class="relevance-reason" title="{{ a.relevance_reason }}">ⓘ</span>
+          <span class="relevance-reason" title="{{ a.relevance_reason }}">&#x24D8;</span>
           {% endif %}
         </div>
 
@@ -75,8 +226,8 @@
           {{ a.title }}
         </a>
         <div class="article-links">
-          <a href="{{ a.hn_url }}" target="_blank" class="link-muted">HN discussion →</a>
-          {% if a.url %}<a href="{{ a.url }}" target="_blank" class="link-muted">Source →</a>{% endif %}
+          <a href="{{ a.hn_url }}" target="_blank" class="link-muted">HN discussion &#x2192;</a>
+          {% if a.url %}<a href="{{ a.url }}" target="_blank" class="link-muted">Source &#x2192;</a>{% endif %}
         </div>
 
         <div class="summary-section" id="summary-{{ a.id }}">
@@ -99,13 +250,13 @@
         </div>
 
         <div class="article-actions">
-          <button class="btn btn-sm btn-ghost" onclick="toggleEdit({{ a.id }})">✎ Edit</button>
+          <button class="btn btn-sm btn-ghost" onclick="toggleEdit({{ a.id }})">&#x270E; Edit</button>
           <form action="/day/{{ date_str }}/article/{{ a.id }}/regenerate" method="post" style="display:inline">
-            <button class="btn btn-sm btn-ghost">↺ Regenerate</button>
+            <button class="btn btn-sm btn-ghost">&#x21BA; Regenerate</button>
           </form>
           <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
             <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
-              {% if a.included %}✕ Exclude{% else %}+ Include{% endif %}
+              {% if a.included %}&#x2715; Exclude{% else %}+ Include{% endif %}
             </button>
           </form>
         </div>
@@ -131,8 +282,6 @@ document.addEventListener('DOMContentLoaded', function() {
     animation: 150,
     onEnd: function() {
       const cards = list.querySelectorAll('.article-card');
-      const inputs = list.querySelectorAll('.order-input');
-      // rebuild hidden inputs to match new order
       const form = document.getElementById('reorder-form');
       form.querySelectorAll('input[name=order]').forEach(el => el.remove());
       cards.forEach(card => {
@@ -147,4 +296,8 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 });
 </script>
+
+{% endif %}
+{% endif %}
+
 {% endblock %}

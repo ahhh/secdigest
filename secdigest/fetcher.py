@@ -100,7 +100,7 @@ def _keyword_score(articles: list[dict]) -> list[dict]:
 
 def _score_batch(articles: list[dict], custom_instructions: str) -> list[dict]:
     """Call Claude to score one batch of articles. Returns [{id, score, reason}]."""
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or None)
 
     article_list = [
         {"id": a["id"], "title": a["title"], "url": a.get("url", "")}

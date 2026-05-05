@@ -16,6 +16,7 @@
       <a href="/archive" class="nav-link {% if request.url.path == '/archive' %}active{% endif %}">Archive</a>
       <a href="/prompts" class="nav-link {% if request.url.path == '/prompts' %}active{% endif %}">Prompts</a>
       <a href="/subscribers" class="nav-link {% if request.url.path == '/subscribers' %}active{% endif %}">Subscribers</a>
+      <a href="/email-templates" class="nav-link {% if '/email-templates' in request.url.path %}active{% endif %}">Templates</a>
       <a href="/settings" class="nav-link {% if request.url.path == '/settings' %}active{% endif %}">Settings</a>
       <form action="/logout" method="post" style="display:inline">
         <button type="submit" class="btn btn-ghost btn-sm">Logout</button>

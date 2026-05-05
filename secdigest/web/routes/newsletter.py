@@ -51,6 +51,17 @@ async def day_view(request: Request, date_str: str):
         return redirect_login()
     newsletter = db.newsletter_get(date_str)
     articles = db.article_list(newsletter["id"]) if newsletter else []
+    view = request.query_params.get("view", "curator")
+    email_templates = db.email_template_list()
+    active_template_id = (
+        db.newsletter_get_template_id(newsletter["id"]) if newsletter else None
+    ) or (email_templates[0]["id"] if email_templates else None)
+    active_subject = (
+        db.newsletter_get_subject(newsletter["id"]) if newsletter else None
+    )
+    if not active_subject and email_templates:
+        tmpl = next((t for t in email_templates if t["id"] == active_template_id), email_templates[0] if email_templates else None)
+        active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"SecDigest — {date_str}"
     return templates.TemplateResponse("day.html", {
         "request": request,
         "date_str": date_str,
@@ -58,6 +69,10 @@ async def day_view(request: Request, date_str: str):
         "articles": articles,
         "is_today": date_str == _today(),
         "fetching": request.query_params.get("fetching") == "1",
+        "view": view,
+        "email_templates": email_templates,
+        "active_template_id": active_template_id,
+        "active_subject": active_subject,
     })
 
 
@@ -72,6 +87,39 @@ async def day_fetch(request: Request, date_str: str):
         return RedirectResponse(f"/day/{date_str}?msg=Articles+already+fetched", status_code=302)
     asyncio.create_task(fetcher.run_fetch(date_str))
     return RedirectResponse(f"/day/{date_str}?fetching=1", status_code=302)
+
+
+@router.get("/day/{date_str}/preview", response_class=HTMLResponse)
+async def day_preview(request: Request, date_str: str, template_id: int = 0):
+    if not is_authed(request):
+        return HTMLResponse("", status_code=401)
+    newsletter = db.newsletter_get(date_str)
+    _placeholder = lambda msg: HTMLResponse(
+        f'<!DOCTYPE html><html><body style="margin:0;padding:40px;background:#0d1117;'
+        f'color:#6e7681;font-family:monospace;text-align:center;"><p>{msg}</p></body></html>'
+    )
+    if not newsletter:
+        return _placeholder("No newsletter for this date.")
+    articles = db.article_list(newsletter["id"])
+    if not any(a.get("included", 1) for a in articles):
+        return _placeholder("No included articles yet — add them in the Curator tab.")
+    tid = template_id or None
+    return HTMLResponse(mailer.render_email_html(newsletter, articles, tid))
+
+
+@router.post("/day/{date_str}/set-template")
+async def set_template(request: Request, date_str: str):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    form = await request.form()
+    template_id = int(form.get("template_id", 0))
+    subject = form.get("subject", "").strip()
+    newsletter = db.newsletter_get_or_create(date_str)
+    if template_id:
+        db.newsletter_set_template_id(newsletter["id"], template_id)
+    if subject:
+        db.newsletter_set_subject(newsletter["id"], subject)
+    return RedirectResponse(f"/day/{date_str}?view=builder", status_code=302)
 
 
 @router.post("/day/{date_str}/summarize")

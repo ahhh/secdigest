@@ -10,7 +10,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from secdigest import config, db
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, verify_password, ensure_default_password
-from secdigest.web.routes import newsletter, prompts, subscribers, settings
+from secdigest.web.routes import newsletter, prompts, subscribers, settings, email_templates_route
 import secdigest.scheduler as sched
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -33,6 +33,7 @@ app.include_router(newsletter.router)
 app.include_router(prompts.router)
 app.include_router(subscribers.router)
 app.include_router(settings.router)
+app.include_router(email_templates_route.router)
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────────

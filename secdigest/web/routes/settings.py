@@ -10,13 +10,41 @@ import secdigest.scheduler as sched
 router = APIRouter()
 
 
+def _humanize_errors(cfg: dict) -> list[dict]:
+    """Convert raw persisted error strings into human-readable notice dicts."""
+    errors = []
+    raw = cfg.get("last_curation_error", "")
+    if raw:
+        el = raw.lower()
+        if "api_key" in el or "auth_token" in el or "authentication method" in el:
+            headline = "Claude API key is missing or invalid"
+            detail = ("Set the ANTHROPIC_API_KEY environment variable to enable AI-powered "
+                      "article curation. Articles are currently being filtered by keyword matching instead.")
+        elif "429" in el or "rate limit" in el or "rate_limit" in el:
+            headline = "Claude API rate limit reached"
+            detail = "Too many requests were sent to the Claude API. This will clear automatically on the next successful fetch."
+        elif "quota" in el or "billing" in el or "credit" in el or "insufficient" in el:
+            headline = "Claude API quota or billing issue"
+            detail = "Check your Anthropic account usage and billing status at console.anthropic.com."
+        elif "connect" in el or "timeout" in el or "network" in el or "name or service" in el:
+            headline = "Could not reach the Claude API"
+            detail = "The request timed out or the network is unreachable. Check your connection and try again."
+        else:
+            headline = "Article curation failed unexpectedly"
+            detail = "Claude returned an error while scoring articles. Check the technical detail below."
+        errors.append({"headline": headline, "detail": detail, "raw": raw})
+    return errors
+
+
 @router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     if not is_authed(request):
         return redirect_login()
+    cfg = db.cfg_all()
     return templates.TemplateResponse("settings.html", {
         "request": request,
-        "cfg": db.cfg_all(),
+        "cfg": cfg,
+        "errors": _humanize_errors(cfg),
         "audit": db.audit_recent(20),
     })
 

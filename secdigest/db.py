@@ -68,6 +68,17 @@ CREATE TABLE IF NOT EXISTS config_kv (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS email_templates (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT    NOT NULL,
+    description  TEXT    DEFAULT '',
+    subject      TEXT    NOT NULL DEFAULT 'SecDigest — {date}',
+    html         TEXT    NOT NULL,
+    article_html TEXT    NOT NULL,
+    is_builtin   INTEGER DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 DEFAULT_PROMPTS = [
@@ -97,6 +108,104 @@ DEFAULT_PROMPTS = [
     },
 ]
 
+_TMPL_DARK_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;">
+<tr><td style="padding-bottom:24px;border-bottom:2px solid #39ff14;">
+<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#39ff14;">SecDigest</span>
+<span style="color:#6e7681;margin-left:12px;font-size:.9em;">{date}</span>
+</td></tr>
+{articles}
+<tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
+You're receiving this because you subscribed to SecDigest.
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_DARK_ARTICLE = """\
+<tr><td style="padding:16px 0;border-bottom:1px solid #21262d;">
+<div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number} &nbsp;&middot;&nbsp; HN {hn_score} pts &nbsp;&middot;&nbsp; {hn_comments} comments</div>
+<a href="{url}" style="color:#58a6ff;font-size:1.05em;font-weight:600;text-decoration:none;">{title}</a>
+<p style="color:#c9d1d9;margin:8px 0 4px;font-size:.9em;line-height:1.5;">{summary}</p>
+<a href="{hn_url}" style="color:#6e7681;font-size:.8em;">HN discussion &#8594;</a>
+</td></tr>"""
+
+_TMPL_LIGHT_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f6f8fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+<tr><td style="padding:28px 32px 20px;border-bottom:3px solid #0969da;">
+<span style="font-size:1.4em;font-weight:700;color:#0969da;letter-spacing:-0.5px;">SecDigest</span>
+<span style="color:#8c959f;margin-left:10px;font-size:.875em;">{date}</span>
+</td></tr>
+<tr><td style="padding:0 32px;">
+<table width="100%" cellpadding="0" cellspacing="0">{articles}</table>
+</td></tr>
+<tr><td style="padding:20px 32px 28px;font-size:.75em;color:#8c959f;border-top:1px solid #e1e4e8;">
+You're receiving this because you subscribed to SecDigest.
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_LIGHT_ARTICLE = """\
+<tr><td style="padding:20px 0;border-bottom:1px solid #e1e4e8;">
+<div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number} &middot; HN {hn_score} pts &middot; {hn_comments} comments</div>
+<a href="{url}" style="color:#0969da;font-size:1em;font-weight:600;text-decoration:none;line-height:1.4;">{title}</a>
+<p style="color:#24292f;margin:8px 0 6px;font-size:.875em;line-height:1.6;">{summary}</p>
+<a href="{hn_url}" style="color:#8c959f;font-size:.8em;">HN discussion &#8594;</a>
+</td></tr>"""
+
+_TMPL_MINIMAL_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#ffffff;font-family:Georgia,'Times New Roman',serif;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:40px 20px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
+<tr><td style="padding-bottom:24px;border-bottom:1px solid #cccccc;">
+<strong style="font-size:1.2em;color:#111111;">SecDigest</strong>
+<span style="color:#888888;margin-left:10px;font-size:.9em;">{date}</span>
+</td></tr>
+{articles}
+<tr><td style="padding-top:32px;font-size:.75em;color:#aaaaaa;border-top:1px solid #eeeeee;">
+You're receiving this because you subscribed to SecDigest.
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_MINIMAL_ARTICLE = """\
+<tr><td style="padding:24px 0;border-bottom:1px solid #eeeeee;">
+<div style="font-size:.8em;color:#aaaaaa;margin-bottom:6px;">#{number}</div>
+<a href="{url}" style="color:#111111;font-size:1em;font-weight:bold;text-decoration:none;">{title}</a>
+<p style="color:#444444;margin:10px 0 8px;font-size:.875em;line-height:1.7;">{summary}</p>
+<a href="{hn_url}" style="color:#aaaaaa;font-size:.8em;text-decoration:none;">Discussion on HN &#8594;</a>
+</td></tr>"""
+
+DEFAULT_EMAIL_TEMPLATES = [
+    {
+        "name": "Dark Terminal",
+        "description": "Dark background with monospace font and green accent. Matches the SecDigest app aesthetic.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_DARK_HTML,
+        "article_html": _TMPL_DARK_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "Clean Light",
+        "description": "White background, blue header, professional sans-serif style.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_LIGHT_HTML,
+        "article_html": _TMPL_LIGHT_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "Minimal",
+        "description": "Plain white with serif font. No heavy styling — lets the content speak.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_MINIMAL_HTML,
+        "article_html": _TMPL_MINIMAL_ARTICLE,
+        "is_builtin": 1,
+    },
+]
+
 
 def _get_conn() -> sqlite3.Connection:
     global _conn
@@ -113,6 +222,7 @@ def init_db():
         conn.commit()
         _seed_config(conn)
         _seed_prompts(conn)
+        _seed_email_templates(conn)
 
 
 def _seed_config(conn):
@@ -127,6 +237,17 @@ def _seed_prompts(conn):
             conn.execute(
                 "INSERT INTO prompts(name, type, content) VALUES (?,?,?)",
                 (p["name"], p["type"], p["content"])
+            )
+        conn.commit()
+
+
+def _seed_email_templates(conn):
+    if conn.execute("SELECT COUNT(*) FROM email_templates").fetchone()[0] == 0:
+        for t in DEFAULT_EMAIL_TEMPLATES:
+            conn.execute(
+                "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
+                "VALUES (?,?,?,?,?,?)",
+                (t["name"], t["description"], t["subject"], t["html"], t["article_html"], t["is_builtin"])
             )
         conn.commit()
 
@@ -339,3 +460,67 @@ def audit_recent(limit: int = 50) -> list[dict]:
         "SELECT * FROM llm_audit_log ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Email Templates ───────────────────────────────────────────────────────────
+
+def email_template_list() -> list[dict]:
+    rows = _get_conn().execute("SELECT * FROM email_templates ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def email_template_get(id: int) -> dict | None:
+    row = _get_conn().execute("SELECT * FROM email_templates WHERE id=?", (id,)).fetchone()
+    return dict(row) if row else None
+
+
+def email_template_default() -> dict | None:
+    row = _get_conn().execute("SELECT * FROM email_templates ORDER BY id LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def email_template_create(name: str, description: str, subject: str, html: str, article_html: str) -> dict:
+    with _lock:
+        cur = _get_conn().execute(
+            "INSERT INTO email_templates(name, description, subject, html, article_html) VALUES (?,?,?,?,?)",
+            (name, description, subject, html, article_html),
+        )
+        _get_conn().commit()
+    return dict(_get_conn().execute("SELECT * FROM email_templates WHERE id=?", (cur.lastrowid,)).fetchone())
+
+
+def email_template_update(id: int, **kwargs):
+    if not kwargs:
+        return
+    fields = ", ".join(f"{k}=?" for k in kwargs)
+    with _lock:
+        _get_conn().execute(f"UPDATE email_templates SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().commit()
+
+
+def email_template_delete(id: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM email_templates WHERE id=? AND is_builtin=0", (id,))
+        _get_conn().commit()
+
+
+def newsletter_get_template_id(newsletter_id: int) -> int | None:
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"tmpl_{newsletter_id}",)
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def newsletter_set_template_id(newsletter_id: int, template_id: int):
+    cfg_set(f"tmpl_{newsletter_id}", str(template_id))
+
+
+def newsletter_get_subject(newsletter_id: int) -> str | None:
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"subject_{newsletter_id}",)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def newsletter_set_subject(newsletter_id: int, subject: str):
+    cfg_set(f"subject_{newsletter_id}", subject)

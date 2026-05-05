@@ -7,43 +7,39 @@ from email.mime.text import MIMEText
 from secdigest import db
 
 
-def _render_html(newsletter: dict, articles: list[dict]) -> str:
+def render_email_html(newsletter: dict, articles: list[dict], template_id: int | None = None) -> str:
+    """Render the newsletter as HTML using the specified or configured template."""
+    template = db.email_template_get(template_id) if template_id else None
+    if not template:
+        tid = db.newsletter_get_template_id(newsletter["id"])
+        template = db.email_template_get(tid) if tid else None
+    if not template:
+        template = db.email_template_default()
+    if not template:
+        return "<html><body><p>No email template configured.</p></body></html>"
+
     rows = ""
-    for i, a in enumerate(articles):
+    n = 0
+    for a in articles:
         if not a.get("included", 1):
             continue
+        n += 1
         summary = a.get("summary") or "<em>No summary generated.</em>"
         url = a.get("url") or a.get("hn_url", "#")
-        rows += f"""
-        <tr>
-          <td style="padding:16px 0;border-bottom:1px solid #21262d;">
-            <div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">
-              #{i+1} &nbsp;·&nbsp; HN {a.get('hn_score',0)} pts
-              &nbsp;·&nbsp; {a.get('hn_comments',0)} comments
-            </div>
-            <a href="{url}" style="color:#58a6ff;font-size:1.05em;font-weight:600;
-               text-decoration:none;">{a['title']}</a>
-            <p style="color:#c9d1d9;margin:8px 0 4px;font-size:.9em;line-height:1.5;">{summary}</p>
-            <a href="{a.get('hn_url','#')}" style="color:#6e7681;font-size:.8em;">HN discussion →</a>
-          </td>
-        </tr>"""
+        row = template["article_html"]
+        row = row.replace("{number}", str(n))
+        row = row.replace("{title}", a.get("title", ""))
+        row = row.replace("{url}", url)
+        row = row.replace("{hn_url}", a.get("hn_url", "#"))
+        row = row.replace("{summary}", summary)
+        row = row.replace("{hn_score}", str(a.get("hn_score", 0)))
+        row = row.replace("{hn_comments}", str(a.get("hn_comments", 0)))
+        rows += row
 
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"></head>
-<body style="margin:0;padding:0;background:#0d1117;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;">
-<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
-<table width="680" cellpadding="0" cellspacing="0"
-       style="max-width:680px;padding:24px 16px;">
-  <tr><td style="padding-bottom:24px;border-bottom:2px solid #39ff14;">
-    <span style="font-family:monospace;font-size:1.6em;font-weight:700;
-          color:#39ff14;">SecDigest</span>
-    <span style="color:#6e7681;margin-left:12px;font-size:.9em;">{newsletter['date']}</span>
-  </td></tr>
-  {rows}
-  <tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;">
-    You're receiving this because you subscribed to SecDigest.
-  </td></tr>
-</table></td></tr></table></body></html>"""
+    html = template["html"]
+    html = html.replace("{articles}", rows)
+    html = html.replace("{date}", newsletter["date"])
+    return html
 
 
 def _render_text(newsletter: dict, articles: list[dict]) -> str:
@@ -67,8 +63,8 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
     if not newsletter:
         return False, f"No newsletter found for {date_str}"
 
-    articles = [a for a in db.article_list(newsletter["id"]) if a.get("included", 1)]
-    if not articles:
+    articles = db.article_list(newsletter["id"])
+    if not any(a.get("included", 1) for a in articles):
         return False, "No included articles to send"
 
     subscribers = db.subscriber_active()
@@ -80,8 +76,14 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
     if not smtp_host:
         return False, "SMTP not configured — set smtp_host in Settings"
 
-    html_body = _render_html(newsletter, articles)
+    html_body = render_email_html(newsletter, articles)
     text_body = _render_text(newsletter, articles)
+
+    subject_override = db.newsletter_get_subject(newsletter["id"])
+    template = db.email_template_get(db.newsletter_get_template_id(newsletter["id"]) or 0)
+    default_subject = template["subject"] if template else "SecDigest — {date}"
+    subject = (subject_override or default_subject).replace("{date}", date_str)
+
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
 
     sent, errors = 0, []
@@ -92,7 +94,7 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
                 server.login(cfg["smtp_user"], cfg.get("smtp_pass", ""))
             for sub in subscribers:
                 msg = MIMEMultipart("alternative")
-                msg["Subject"] = f"SecDigest — {date_str}"
+                msg["Subject"] = subject
                 msg["From"] = smtp_from
                 msg["To"] = sub["email"]
                 msg.attach(MIMEText(text_body, "plain"))

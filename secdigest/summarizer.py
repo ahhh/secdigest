@@ -34,7 +34,7 @@ def summarize_article(article_id: int) -> str | None:
     ]))
 
     try:
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or None)
         resp = client.messages.create(
             model=MODEL,
             max_tokens=300,

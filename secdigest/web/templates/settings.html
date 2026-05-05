@@ -6,12 +6,14 @@
   <h1 class="page-title">Settings</h1>
 </div>
 
-{% if cfg.get('last_curation_error') %}
-<div class="flash flash-error" style="margin-bottom:16px">
-  <strong>Curation error (Claude unavailable — keyword fallback active):</strong><br>
-  <span class="mono" style="font-size:0.85em">{{ cfg.get('last_curation_error') }}</span>
+{% for err in errors %}
+<div class="notice notice-error" role="alert">
+  <button class="notice-close" onclick="this.closest('.notice').remove()" aria-label="Dismiss">✕</button>
+  <div class="notice-headline">{{ err.headline }}</div>
+  <div class="notice-detail">{{ err.detail }}</div>
+  <div class="notice-raw">{{ err.raw }}</div>
 </div>
-{% endif %}
+{% endfor %}
 
 <form action="/settings" method="post">
 <div class="settings-grid">
