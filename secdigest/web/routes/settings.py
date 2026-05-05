@@ -56,7 +56,7 @@ async def save_settings(request: Request):
     form = await request.form()
 
     for field in ("smtp_host", "smtp_port", "smtp_user", "smtp_from",
-                  "fetch_time", "hn_min_score", "max_articles"):
+                  "fetch_time", "hn_min_score", "max_articles", "base_url"):
         if field in form:
             db.cfg_set(field, form[field])
 

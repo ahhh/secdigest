@@ -59,8 +59,8 @@
     <form action="/day/{{ date_str }}/article/add" method="post">
       <div class="form-row">
         <div class="form-group" style="flex:2">
-          <label class="label">URL <span class="text-muted">(required)</span></label>
-          <input type="url" name="url" class="input" required placeholder="https://example.com/article">
+          <label class="label">URL <span class="text-muted">(leave blank for editorial note)</span></label>
+          <input type="text" name="url" class="input" placeholder="https://example.com/article">
         </div>
         <div class="form-group" style="flex:2">
           <label class="label">Title <span class="text-muted">(required)</span></label>
@@ -139,7 +139,7 @@
         </div>
         <div class="form-group">
           <label class="label">Wrapper HTML
-            <span class="text-muted" style="font-weight:400"> — use <code>{articles}</code> and <code>{date}</code></span>
+            <span class="text-muted" style="font-weight:400"> — use <code>{articles}</code>, <code>{date}</code>, <code>{unsubscribe_url}</code></span>
           </label>
           <textarea id="edit-html" class="textarea" rows="9"></textarea>
         </div>
@@ -323,20 +323,28 @@ function appendFields(form, fields) {
       <div class="article-body">
         <div class="article-meta">
           <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
+          {% if a.hn_id %}
           <span class="hn-score">HN {{ a.hn_score }}</span>
           <span class="hn-comments">{{ a.hn_comments }} comments</span>
+          {% else %}
+          <span class="text-muted" style="font-style:italic;font-size:0.95em;">editorial note</span>
+          {% endif %}
           {% if a.relevance_reason %}
           <span class="relevance-reason" title="{{ a.relevance_reason }}">&#x24D8;</span>
           {% endif %}
         </div>
 
-        <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">
-          {{ a.title }}
-        </a>
+        {% if a.url or a.hn_url %}
+        <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">{{ a.title }}</a>
+        {% else %}
+        <span class="article-title" style="cursor:default;">{{ a.title }}</span>
+        {% endif %}
+        {% if a.url or a.hn_url %}
         <div class="article-links">
-          <a href="{{ a.hn_url }}" target="_blank" class="link-muted">HN discussion &#x2192;</a>
+          {% if a.hn_url %}<a href="{{ a.hn_url }}" target="_blank" class="link-muted">HN discussion &#x2192;</a>{% endif %}
           {% if a.url %}<a href="{{ a.url }}" target="_blank" class="link-muted">Source &#x2192;</a>{% endif %}
         </div>
+        {% endif %}
 
         <div class="summary-section" id="summary-{{ a.id }}">
           {% if a.summary %}
@@ -359,9 +367,8 @@ function appendFields(form, fields) {
 
         <div class="article-actions">
           <button class="btn btn-sm btn-ghost" onclick="toggleEdit({{ a.id }})">&#x270E; Edit</button>
-          <form action="/day/{{ date_str }}/article/{{ a.id }}/regenerate" method="post" style="display:inline">
-            <button class="btn btn-sm btn-ghost">&#x21BA; Regenerate</button>
-          </form>
+          <button class="btn btn-sm btn-ghost" id="regen-btn-{{ a.id }}"
+                  onclick="triggerRegenerate({{ a.id }})">&#x21BA; Regenerate</button>
           <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
             <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
               {% if a.included %}&#x2715; Exclude{% else %}+ Include{% endif %}
@@ -377,6 +384,8 @@ function appendFields(form, fields) {
 {% endif %}
 
 <script>
+const dateStr = '{{ date_str }}';
+
 function toggleAddArticle() {
   const panel = document.getElementById('add-article-panel');
   if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
@@ -385,6 +394,46 @@ function toggleAddArticle() {
 function toggleEdit(id) {
   const edit = document.getElementById('edit-' + id);
   edit.style.display = edit.style.display === 'none' ? 'block' : 'none';
+}
+
+function triggerRegenerate(id) {
+  const section = document.getElementById('summary-' + id);
+  const textEl  = document.getElementById('summary-text-' + id);
+  const btn     = document.getElementById('regen-btn-' + id);
+  const oldSummary = textEl ? textEl.textContent.trim() : '';
+
+  // Hide existing text, show spinner
+  if (textEl) textEl.style.display = 'none';
+  const placeholder = section && section.querySelector('.summary-placeholder');
+  if (placeholder) placeholder.style.display = 'none';
+
+  let spinner = document.getElementById('regen-spinner-' + id);
+  if (!spinner) {
+    spinner = document.createElement('div');
+    spinner.id = 'regen-spinner-' + id;
+    spinner.className = 'regen-spinner';
+    spinner.innerHTML = '<span class="spinner-icon">&#x27F3;</span> Regenerating&hellip;';
+    section.insertBefore(spinner, section.firstChild);
+  }
+  spinner.style.display = 'flex';
+  if (btn) btn.disabled = true;
+
+  fetch('/day/' + dateStr + '/article/' + id + '/regenerate', {method: 'POST'})
+    .then(() => {
+      let attempts = 0;
+      const timer = setInterval(() => {
+        attempts++;
+        if (attempts > 30) { clearInterval(timer); window.location.reload(); return; }
+        fetch('/day/' + dateStr + '/article/' + id + '/json')
+          .then(r => r.json())
+          .then(data => {
+            if (data.summary && data.summary.trim() !== oldSummary) {
+              clearInterval(timer);
+              window.location.reload();
+            }
+          });
+      }, 2000);
+    });
 }
 
 document.addEventListener('DOMContentLoaded', function() {

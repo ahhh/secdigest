@@ -74,6 +74,15 @@
   </div>
 
   <div class="settings-section">
+    <div class="section-label">Newsletter</div>
+    <div class="form-group">
+      <label class="label">Site base URL <span class="text-muted">(used for unsubscribe links)</span></label>
+      <input type="text" name="base_url" value="{{ cfg.base_url }}"
+             class="input" placeholder="http://localhost:8000">
+    </div>
+  </div>
+
+  <div class="settings-section">
     <div class="section-label">Security</div>
     <div class="form-group">
       <label class="label">New password (leave blank to keep current)</label>

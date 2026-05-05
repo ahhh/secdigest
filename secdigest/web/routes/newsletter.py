@@ -148,15 +148,20 @@ async def day_send(request: Request, date_str: str):
 
 @router.post("/day/{date_str}/article/add")
 async def add_article(request: Request, date_str: str,
-                      url: str = Form(...),
+                      url: str = Form(""),
                       title: str = Form(...),
                       summary: str = Form(""),
                       auto_summarize: str = Form("0")):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
+    if not url.strip() and not summary.strip():
+        return RedirectResponse(
+            f"/day/{date_str}?msg=URL+or+summary+required&status=error", status_code=302
+        )
     newsletter = db.newsletter_get_or_create(date_str)
     articles = db.article_list(newsletter["id"])
     position = max((a["position"] for a in articles), default=-1) + 1
+    reason = "manually added" if url.strip() else "editorial note"
     article_id = db.article_insert(
         newsletter_id=newsletter["id"],
         hn_id=None,
@@ -165,7 +170,7 @@ async def add_article(request: Request, date_str: str,
         hn_score=0,
         hn_comments=0,
         relevance_score=10.0,
-        relevance_reason="manually added",
+        relevance_reason=reason,
         position=position,
     )
     if summary.strip():
@@ -182,6 +187,16 @@ async def update_summary(request: Request, date_str: str, article_id: int,
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     db.article_update(article_id, summary=summary)
     return RedirectResponse(f"/day/{date_str}", status_code=302)
+
+
+@router.get("/day/{date_str}/article/{article_id}/json")
+async def article_json(request: Request, date_str: str, article_id: int):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    article = db.article_get(article_id)
+    if not article:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"id": article_id, "summary": article.get("summary")})
 
 
 @router.post("/day/{date_str}/article/{article_id}/regenerate")

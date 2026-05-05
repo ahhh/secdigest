@@ -1,6 +1,7 @@
 """All SQLite operations. Single module — import this everywhere you need data access."""
 import sqlite3
 import threading
+import uuid
 from secdigest import config
 
 _conn: sqlite3.Connection | None = None
@@ -45,11 +46,12 @@ CREATE TABLE IF NOT EXISTS prompts (
 );
 
 CREATE TABLE IF NOT EXISTS subscribers (
-    id          INTEGER PRIMARY KEY,
-    email       TEXT    UNIQUE NOT NULL,
-    name        TEXT    DEFAULT '',
-    active      INTEGER DEFAULT 1,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id                INTEGER PRIMARY KEY,
+    email             TEXT    UNIQUE NOT NULL,
+    name              TEXT    DEFAULT '',
+    active            INTEGER DEFAULT 1,
+    unsubscribe_token TEXT,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS llm_audit_log (
@@ -119,7 +121,8 @@ _TMPL_DARK_HTML = """\
 </td></tr>
 {articles}
 <tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest.
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
 
@@ -128,7 +131,6 @@ _TMPL_DARK_ARTICLE = """\
 <div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number} &nbsp;&middot;&nbsp; HN {hn_score} pts &nbsp;&middot;&nbsp; {hn_comments} comments</div>
 <a href="{url}" style="color:#58a6ff;font-size:1.05em;font-weight:600;text-decoration:none;">{title}</a>
 <p style="color:#c9d1d9;margin:8px 0 4px;font-size:.9em;line-height:1.5;">{summary}</p>
-<a href="{hn_url}" style="color:#6e7681;font-size:.8em;">HN discussion &#8594;</a>
 </td></tr>"""
 
 _TMPL_LIGHT_HTML = """\
@@ -144,7 +146,8 @@ _TMPL_LIGHT_HTML = """\
 <table width="100%" cellpadding="0" cellspacing="0">{articles}</table>
 </td></tr>
 <tr><td style="padding:20px 32px 28px;font-size:.75em;color:#8c959f;border-top:1px solid #e1e4e8;">
-You're receiving this because you subscribed to SecDigest.
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#8c959f;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
 
@@ -153,7 +156,6 @@ _TMPL_LIGHT_ARTICLE = """\
 <div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number} &middot; HN {hn_score} pts &middot; {hn_comments} comments</div>
 <a href="{url}" style="color:#0969da;font-size:1em;font-weight:600;text-decoration:none;line-height:1.4;">{title}</a>
 <p style="color:#24292f;margin:8px 0 6px;font-size:.875em;line-height:1.6;">{summary}</p>
-<a href="{hn_url}" style="color:#8c959f;font-size:.8em;">HN discussion &#8594;</a>
 </td></tr>"""
 
 _TMPL_MINIMAL_HTML = """\
@@ -167,7 +169,8 @@ _TMPL_MINIMAL_HTML = """\
 </td></tr>
 {articles}
 <tr><td style="padding-top:32px;font-size:.75em;color:#aaaaaa;border-top:1px solid #eeeeee;">
-You're receiving this because you subscribed to SecDigest.
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#aaaaaa;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
 
@@ -176,8 +179,38 @@ _TMPL_MINIMAL_ARTICLE = """\
 <div style="font-size:.8em;color:#aaaaaa;margin-bottom:6px;">#{number}</div>
 <a href="{url}" style="color:#111111;font-size:1em;font-weight:bold;text-decoration:none;">{title}</a>
 <p style="color:#444444;margin:10px 0 8px;font-size:.875em;line-height:1.7;">{summary}</p>
-<a href="{hn_url}" style="color:#aaaaaa;font-size:.8em;text-decoration:none;">Discussion on HN &#8594;</a>
 </td></tr>"""
+
+_TMPL_GRID_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:700px;">
+<tr><td style="padding-bottom:20px;border-bottom:2px solid #39ff14;">
+<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#39ff14;">SecDigest</span>
+<span style="color:#6e7681;margin-left:12px;font-size:.9em;">{date}</span>
+</td></tr>
+<tr><td style="padding-top:14px;">
+<table width="100%" cellpadding="0" cellspacing="0">
+{articles_2col}
+</table>
+</td></tr>
+<tr><td style="padding-top:20px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_GRID_ARTICLE = """\
+<td style="width:50%;vertical-align:top;padding:6px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#161b22;border:1px solid #30363d;border-radius:6px;">
+<tr><td style="padding:14px;vertical-align:top;">
+<div style="font-size:.7em;color:#6e7681;font-family:monospace;margin-bottom:8px;">#{number}</div>
+<a href="{url}" style="color:#58a6ff;font-size:.9em;font-weight:600;text-decoration:none;display:block;line-height:1.4;margin-bottom:10px;">{title}</a>
+<p style="color:#c9d1d9;margin:0;font-size:.82em;line-height:1.55;">{summary}</p>
+</td></tr>
+</table>
+</td>"""
 
 DEFAULT_EMAIL_TEMPLATES = [
     {
@@ -204,6 +237,14 @@ DEFAULT_EMAIL_TEMPLATES = [
         "article_html": _TMPL_MINIMAL_ARTICLE,
         "is_builtin": 1,
     },
+    {
+        "name": "2-Column Grid",
+        "description": "Dark theme with articles in a 2-column card grid. Best for shorter summaries.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_GRID_HTML,
+        "article_html": _TMPL_GRID_ARTICLE,
+        "is_builtin": 1,
+    },
 ]
 
 
@@ -223,6 +264,10 @@ def init_db():
         _seed_config(conn)
         _seed_prompts(conn)
         _seed_email_templates(conn)
+        _migrate_subscriber_tokens(conn)
+        _migrate_builtin_template_unsubscribe(conn)
+        _migrate_builtin_remove_hn_links(conn)
+        _migrate_add_grid_template(conn)
 
 
 def _seed_config(conn):
@@ -239,6 +284,70 @@ def _seed_prompts(conn):
                 (p["name"], p["type"], p["content"])
             )
         conn.commit()
+
+
+def _migrate_subscriber_tokens(conn):
+    """Add unsubscribe_token column to subscribers and backfill any NULLs."""
+    try:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN unsubscribe_token TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    rows = conn.execute("SELECT id FROM subscribers WHERE unsubscribe_token IS NULL").fetchall()
+    for row in rows:
+        conn.execute("UPDATE subscribers SET unsubscribe_token=? WHERE id=?",
+                     (str(uuid.uuid4()), row[0]))
+    if rows:
+        conn.commit()
+
+
+def _migrate_builtin_remove_hn_links(conn):
+    """Strip <a href="{hn_url}"> discussion links from existing built-in article templates."""
+    import re
+    rows = conn.execute(
+        "SELECT id, article_html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    changed = False
+    for row in rows:
+        if "{hn_url}" in row[1]:
+            new_html = re.sub(r'\s*<a href="\{hn_url\}"[^>]*>[^<]*</a>', "", row[1])
+            conn.execute("UPDATE email_templates SET article_html=? WHERE id=?", (new_html, row[0]))
+            changed = True
+    if changed:
+        conn.commit()
+
+
+def _migrate_add_grid_template(conn):
+    """Insert the 2-Column Grid template if it doesn't exist yet."""
+    if conn.execute(
+        "SELECT COUNT(*) FROM email_templates WHERE name='2-Column Grid'"
+    ).fetchone()[0] == 0:
+        conn.execute(
+            "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
+            "VALUES (?,?,?,?,?,?)",
+            ("2-Column Grid",
+             "Dark theme with articles in a 2-column card grid. Best for shorter summaries.",
+             "SecDigest — {date}",
+             _TMPL_GRID_HTML, _TMPL_GRID_ARTICLE, 1),
+        )
+        conn.commit()
+
+
+def _migrate_builtin_template_unsubscribe(conn):
+    """Add {unsubscribe_url} footer link to built-in templates that don't have it yet."""
+    rows = conn.execute(
+        "SELECT id, html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    for row in rows:
+        if "{unsubscribe_url}" not in row[1]:
+            new_html = row[1].replace(
+                "You're receiving this because you subscribed to SecDigest.",
+                "You're receiving this because you subscribed to SecDigest."
+                " &nbsp;&middot;&nbsp; "
+                '<a href="{unsubscribe_url}" style="color:inherit;opacity:0.7;">Unsubscribe</a>',
+            )
+            conn.execute("UPDATE email_templates SET html=? WHERE id=?", (new_html, row[0]))
+    conn.commit()
 
 
 def _seed_email_templates(conn):
@@ -412,7 +521,8 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
     try:
         with _lock:
             cur = _get_conn().execute(
-                "INSERT INTO subscribers(email, name) VALUES(?,?)", (email, name)
+                "INSERT INTO subscribers(email, name, unsubscribe_token) VALUES(?,?,?)",
+                (email, name, str(uuid.uuid4())),
             )
             _get_conn().commit()
         return dict(_get_conn().execute("SELECT * FROM subscribers WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -439,6 +549,21 @@ def subscriber_active() -> list[dict]:
     return [dict(r) for r in _get_conn().execute(
         "SELECT * FROM subscribers WHERE active=1"
     ).fetchall()]
+
+
+def subscriber_get_by_token(token: str) -> dict | None:
+    row = _get_conn().execute(
+        "SELECT * FROM subscribers WHERE unsubscribe_token=?", (token,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def subscriber_unsubscribe_by_token(token: str):
+    with _lock:
+        _get_conn().execute(
+            "UPDATE subscribers SET active=0 WHERE unsubscribe_token=?", (token,)
+        )
+        _get_conn().commit()
 
 
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────
