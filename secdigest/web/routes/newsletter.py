@@ -57,6 +57,7 @@ async def day_view(request: Request, date_str: str):
         "newsletter": newsletter,
         "articles": articles,
         "is_today": date_str == _today(),
+        "fetching": request.query_params.get("fetching") == "1",
     })
 
 
@@ -66,8 +67,11 @@ async def day_view(request: Request, date_str: str):
 async def day_fetch(request: Request, date_str: str):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
+    newsletter = db.newsletter_get(date_str)
+    if newsletter and db.article_hn_ids(newsletter["id"]):
+        return RedirectResponse(f"/day/{date_str}?msg=Articles+already+fetched", status_code=302)
     asyncio.create_task(fetcher.run_fetch(date_str))
-    return RedirectResponse(f"/day/{date_str}?msg=Fetching+articles...", status_code=302)
+    return RedirectResponse(f"/day/{date_str}?fetching=1", status_code=302)
 
 
 @router.post("/day/{date_str}/summarize")

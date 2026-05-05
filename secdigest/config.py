@@ -20,7 +20,7 @@ DB_CONFIG_DEFAULTS = {
     "smtp_user":     os.environ.get("SMTP_USER", ""),
     "smtp_pass":     os.environ.get("SMTP_PASS", ""),
     "smtp_from":     os.environ.get("SMTP_FROM", "SecDigest <noreply@example.com>"),
-    "fetch_time":    os.environ.get("FETCH_TIME", "07:00"),
+    "fetch_time":    os.environ.get("FETCH_TIME", "00:00"),
     "hn_min_score":  os.environ.get("HN_MIN_SCORE", "50"),
     "max_articles":  os.environ.get("MAX_ARTICLES", "15"),
     "auto_send":     "0",

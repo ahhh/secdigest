@@ -1,6 +1,7 @@
 """Fetch HN top stories and score them for security relevance via Claude."""
 import asyncio
 import json
+import re
 import httpx
 import anthropic
 from datetime import date as dt_date
@@ -67,6 +68,36 @@ async def fetch_top_stories(limit: int = 200) -> list[dict]:
     ]
 
 
+_KW_HIGH = re.compile(
+    r'\b(cve|exploit|exploited|exploiting|vulnerabilit\w+|breach|breached|malware|'
+    r'ransomware|zero.day|0.day|backdoor|rce|remote.code.execution|xss|sql.injection|'
+    r'injection|attack\w*|hack\w*|compromis\w+|critical|threat\w*|patch\w*|'
+    r'zero.day|trojan|rootkit|keylogger|spyware|botnet|apt|phish\w+|ddos)\b',
+    re.IGNORECASE,
+)
+_KW_MED = re.compile(
+    r'\b(security|secur\w+|privacy|authenti\w+|encrypt\w+|ssl|tls|firewall|'
+    r'pentest|infosec|cryptograph\w+|password|token|oauth|certif\w+|mitm|'
+    r'surveillance|worm|supply.chain|credential\w*)\b',
+    re.IGNORECASE,
+)
+
+
+def _keyword_score(articles: list[dict]) -> list[dict]:
+    """Simple keyword fallback when Claude is unavailable."""
+    results = []
+    for a in articles:
+        title = a["title"]
+        if _KW_HIGH.search(title):
+            score, reason = 7.0, "keyword match (high)"
+        elif _KW_MED.search(title):
+            score, reason = 5.0, "keyword match (medium)"
+        else:
+            score, reason = 1.0, "no security keywords"
+        results.append({"id": a["id"], "score": score, "reason": reason})
+    return results
+
+
 def _score_batch(articles: list[dict], custom_instructions: str) -> list[dict]:
     """Call Claude to score one batch of articles. Returns [{id, score, reason}]."""
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
@@ -111,12 +142,24 @@ def score_articles(articles: list[dict]) -> list[dict]:
     custom = "\n\n".join(p["content"] for p in prompts if p["active"]) or "Use the scoring guide."
 
     scores: dict[int, dict] = {}
+    llm_error: str | None = None
+
     for i in range(0, len(articles), 25):
         try:
             for item in _score_batch(articles[i:i + 25], custom):
                 scores[item["id"]] = item
         except Exception as e:
+            llm_error = str(e)
             print(f"[fetcher] curation batch error: {e}")
+
+    if llm_error:
+        db.cfg_set("last_curation_error", llm_error)
+        unscored = [a for a in articles if a["id"] not in scores]
+        print(f"[fetcher] falling back to keyword scoring for {len(unscored)} articles")
+        for item in _keyword_score(unscored):
+            scores[item["id"]] = item
+    else:
+        db.cfg_set("last_curation_error", "")
 
     for a in articles:
         s = scores.get(a["id"], {})
@@ -133,6 +176,10 @@ async def run_fetch(date_str: str | None = None) -> dict:
 
     newsletter = db.newsletter_get_or_create(date_str)
     existing_ids = db.article_hn_ids(newsletter["id"])
+
+    if existing_ids:
+        print(f"[fetcher] {date_str} already has {len(existing_ids)} articles, skipping")
+        return newsletter
 
     print(f"[fetcher] fetching HN for {date_str}...")
     stories = await fetch_top_stories()

@@ -35,12 +35,21 @@
 
 {% if not articles %}
 <div class="empty-state">
+  {% if fetching %}
+  <div class="empty-icon">⟳</div>
+  <p>Fetching and scoring articles from Hacker News&hellip;</p>
+  <p class="text-muted" style="font-size:0.85em">This takes about a minute while articles are rated for security relevance.</p>
+  {% else %}
   <div class="empty-icon">◎</div>
   <p>No articles yet for {{ date_str }}.</p>
   <form action="/day/{{ date_str }}/fetch" method="post">
     <button class="btn btn-primary">Fetch from Hacker News</button>
   </form>
+  {% endif %}
 </div>
+{% if fetching %}
+<script>setTimeout(function(){ window.location.href = '/day/{{ date_str }}?fetching=1'; }, 4000);</script>
+{% endif %}
 {% else %}
 
 <div class="reorder-hint">Drag articles to reorder ↕</div>
