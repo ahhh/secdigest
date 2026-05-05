@@ -103,8 +103,10 @@ DEFAULT_PROMPTS = [
         "type": "summary",
         "content": (
             "Write a concise 2-3 sentence summary for a security professional audience. "
-            "Focus on: what the vulnerability/tool/threat is, who or what it affects, "
-            "severity/impact, and any CVE IDs, affected versions, or mitigations if known. "
+            "Always produce a summary regardless of article type — never refuse. "
+            "For vulnerabilities: include CVE IDs, affected versions, severity, and mitigations. "
+            "For opinion or discussion pieces: capture the core argument and its security relevance. "
+            "For tools or research: describe what it does and why it matters. "
             "Be factual and direct. No fluff, no marketing language."
         ),
     },
@@ -266,6 +268,7 @@ def init_db():
         _seed_email_templates(conn)
         _migrate_subscriber_tokens(conn)
         _migrate_builtin_template_unsubscribe(conn)
+        _migrate_summary_prompt(conn)
         _migrate_builtin_remove_hn_links(conn)
         _migrate_add_grid_template(conn)
 
@@ -298,6 +301,25 @@ def _migrate_subscriber_tokens(conn):
         conn.execute("UPDATE subscribers SET unsubscribe_token=? WHERE id=?",
                      (str(uuid.uuid4()), row[0]))
     if rows:
+        conn.commit()
+
+
+_OLD_SUMMARY_PROMPT = (
+    "Write a concise 2-3 sentence summary for a security professional audience. "
+    "Focus on: what the vulnerability/tool/threat is, who or what it affects, "
+    "severity/impact, and any CVE IDs, affected versions, or mitigations if known. "
+    "Be factual and direct. No fluff, no marketing language."
+)
+_NEW_SUMMARY_PROMPT = DEFAULT_PROMPTS[1]["content"]
+
+
+def _migrate_summary_prompt(conn):
+    """Update the default summary prompt if it hasn't been customised."""
+    row = conn.execute(
+        "SELECT id, content FROM prompts WHERE type='summary' AND name='Technical Summary Style'"
+    ).fetchone()
+    if row and row[1].strip() == _OLD_SUMMARY_PROMPT.strip():
+        conn.execute("UPDATE prompts SET content=? WHERE id=?", (_NEW_SUMMARY_PROMPT, row[0]))
         conn.commit()
 
 
