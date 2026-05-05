@@ -8,7 +8,8 @@
 
 {% for err in errors %}
 <div class="notice notice-error" role="alert">
-  <button class="notice-close" onclick="this.closest('.notice').remove()" aria-label="Dismiss">✕</button>
+  <button class="notice-close" aria-label="Dismiss"
+          onclick="fetch('/settings/clear-curation-error',{method:'POST'}).finally(()=>this.closest('.notice').remove())">✕</button>
   <div class="notice-headline">{{ err.headline }}</div>
   <div class="notice-detail">{{ err.detail }}</div>
   <div class="notice-raw">{{ err.raw }}</div>

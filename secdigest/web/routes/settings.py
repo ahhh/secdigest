@@ -70,3 +70,11 @@ async def save_settings(request: Request):
 
     sched.reschedule(db.cfg_get("fetch_time"))
     return RedirectResponse("/settings?msg=Saved", status_code=302)
+
+
+@router.post("/settings/clear-curation-error")
+async def clear_curation_error(request: Request):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    db.cfg_set("last_curation_error", "")
+    return JSONResponse({"ok": True})

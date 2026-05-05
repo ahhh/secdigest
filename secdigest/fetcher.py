@@ -135,21 +135,27 @@ def _score_article(article: dict, custom_instructions: str) -> dict:
         messages=[{"role": "user", "content": user_prompt}],
     )
 
-    usage = resp.usage
-    db.audit_log(
-        operation="curation", model=MODEL,
-        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
-        cached_tokens=getattr(usage, "cache_read_input_tokens", 0),
-        article_id=None, result_snippet=resp.content[0].text[:300],
-    )
-
     text = resp.content[0].text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
         end = -1 if lines[-1].strip() == "```" else len(lines)
         text = "\n".join(lines[1:end])
 
-    return json.loads(text)
+    result = json.loads(text)
+    score = result.get("score", "?")
+    reason = result.get("reason", "")
+    title = article.get("title", "")[:70]
+    snippet = f"[{score}/10] {title} — {reason}"
+
+    usage = resp.usage
+    db.audit_log(
+        operation="curation", model=MODEL,
+        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+        cached_tokens=getattr(usage, "cache_read_input_tokens", 0),
+        article_id=None, result_snippet=snippet,
+    )
+
+    return result
 
 
 def score_articles(articles: list[dict]) -> list[dict]:
