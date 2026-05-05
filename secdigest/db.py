@@ -314,9 +314,10 @@ def article_get(id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def article_insert(newsletter_id: int, hn_id: int, title: str, url: str,
+def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
                    hn_score: int, hn_comments: int, relevance_score: float,
                    relevance_reason: str, position: int) -> int:
+    hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else None
     with _lock:
         cur = _get_conn().execute(
             """INSERT OR IGNORE INTO articles
@@ -324,7 +325,7 @@ def article_insert(newsletter_id: int, hn_id: int, title: str, url: str,
                 relevance_score, relevance_reason, position)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (newsletter_id, hn_id, title, url,
-             f"https://news.ycombinator.com/item?id={hn_id}",
+             hn_url,
              hn_score, hn_comments, relevance_score, relevance_reason, position),
         )
         _get_conn().commit()

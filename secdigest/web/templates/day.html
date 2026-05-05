@@ -22,6 +22,7 @@
     <form action="/day/{{ date_str }}/fetch" method="post" style="display:inline">
       <button class="btn btn-outline">&#x2193; Fetch HN</button>
     </form>
+    <button class="btn btn-outline" onclick="toggleAddArticle()">+ Add Article</button>
     {% if articles %}
     <form action="/day/{{ date_str }}/summarize" method="post" style="display:inline">
       <button class="btn btn-outline">&#x2726; Summarize</button>
@@ -40,11 +41,51 @@
   </div>
 </div>
 
-<!-- View toggle tabs -->
-<div class="view-tabs">
-  <a href="/day/{{ date_str }}" class="view-tab {% if view == 'curator' %}active{% endif %}">&#x25C8; Curator</a>
-  <a href="/day/{{ date_str }}?view=builder" class="view-tab {% if view == 'builder' %}active{% endif %}">&#x2709; Email Builder</a>
+<!-- View mode toggle -->
+<div class="view-toggle">
+  <a href="/day/{{ date_str }}" class="view-toggle-btn {% if view == 'curator' %}active{% endif %}">
+    &#x25C8; Curator
+  </a>
+  <a href="/day/{{ date_str }}?view=builder" class="view-toggle-btn {% if view == 'builder' %}active-builder{% endif %}">
+    &#x2709; Email Builder
+  </a>
 </div>
+
+<!-- Add article panel (curator only, always available) -->
+{% if view == 'curator' %}
+<div id="add-article-panel" style="display:none;margin-bottom:20px;">
+  <div class="form-card" style="margin-bottom:0;">
+    <div class="section-label" style="margin-bottom:12px;">Add Article Manually</div>
+    <form action="/day/{{ date_str }}/article/add" method="post">
+      <div class="form-row">
+        <div class="form-group" style="flex:2">
+          <label class="label">URL <span class="text-muted">(required)</span></label>
+          <input type="url" name="url" class="input" required placeholder="https://example.com/article">
+        </div>
+        <div class="form-group" style="flex:2">
+          <label class="label">Title <span class="text-muted">(required)</span></label>
+          <input type="text" name="title" class="input" required placeholder="Article title">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">Summary <span class="text-muted">(leave blank to auto-generate)</span></label>
+        <textarea name="summary" class="textarea" rows="3"
+                  placeholder="Optional — leave blank and check below to auto-generate via AI"></textarea>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <label class="checkbox-label">
+          <input type="checkbox" name="auto_summarize" value="1">
+          Auto-generate summary if blank
+        </label>
+        <div class="btn-group">
+          <button type="submit" class="btn btn-primary btn-sm">Add Article</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="toggleAddArticle()">Cancel</button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
 
 {% if view == 'builder' %}
 
@@ -54,25 +95,22 @@
   <!-- Left sidebar -->
   <div class="builder-sidebar">
 
+    <!-- Template picker -->
     <div class="builder-section">
-      <div class="section-label">Template</div>
-      <div class="tmpl-list" id="tmpl-list">
+      <div class="section-label" style="margin-bottom:8px;">Template</div>
+      <select class="input" id="tmpl-select"
+              onchange="selectTemplate(parseInt(this.value))">
         {% for t in email_templates %}
-        <div class="tmpl-card {% if t.id == active_template_id %}active{% endif %}"
-             id="tmpl-card-{{ t.id }}"
-             onclick="selectTemplate({{ t.id }})">
-          <div class="tmpl-card-name">{{ t.name }}</div>
-          {% if t.description %}<div class="tmpl-card-desc">{{ t.description }}</div>{% endif %}
-        </div>
+        <option value="{{ t.id }}" {% if t.id == active_template_id %}selected{% endif %}>
+          {{ t.name }}{% if t.is_builtin %} (built-in){% endif %}
+        </option>
         {% endfor %}
-      </div>
-      <a href="/email-templates" class="btn btn-ghost btn-sm" style="margin-top:8px;width:100%">
-        &#x2699; Manage Templates
-      </a>
+      </select>
     </div>
 
+    <!-- Subject + save choice -->
     <div class="builder-section">
-      <form action="/day/{{ date_str }}/set-template" method="post" id="tmpl-form">
+      <form action="/day/{{ date_str }}/set-template" method="post">
         <input type="hidden" name="template_id" id="tmpl-form-id" value="{{ active_template_id or '' }}">
         <div class="form-group">
           <label class="label">Subject line</label>
@@ -81,42 +119,70 @@
                  placeholder="SecDigest — {{ date_str }}">
         </div>
         <button type="submit" class="btn btn-primary btn-sm" style="width:100%">
-          &#x2713; Save Template Choice
+          &#x2713; Apply &amp; Save
         </button>
       </form>
     </div>
 
+    <!-- Inline template editor -->
     <div class="builder-section">
-      <button class="btn btn-ghost btn-sm" style="width:100%" onclick="toggleTemplateEditor()">
-        &#x270E; Edit Template HTML
+      <button class="btn btn-ghost btn-sm" style="width:100%;justify-content:space-between"
+              onclick="toggleTemplateEditor()">
+        <span>&#x270E; Edit Template HTML</span>
+        <span id="editor-arrow">&#x25BE;</span>
       </button>
-      <div id="tmpl-editor" style="display:none;margin-top:12px;">
-        <form id="tmpl-save-form" action="/email-templates/1/save" method="post">
-          <div class="form-group">
-            <label class="label">Name</label>
-            <input type="text" name="name" id="edit-name" class="input input-sm">
-          </div>
-          <div class="form-group">
-            <label class="label">Wrapper HTML</label>
-            <textarea name="html" id="edit-html" class="textarea" rows="8"></textarea>
-          </div>
-          <div class="form-group">
-            <label class="label">Article HTML</label>
-            <textarea name="article_html" id="edit-article-html" class="textarea" rows="6"></textarea>
-          </div>
-          <!-- keep other fields hidden so the save form is complete -->
-          <input type="hidden" name="description" id="edit-description">
-          <input type="hidden" name="subject" id="edit-subject-hidden">
-          <div class="btn-group" style="margin-top:8px;">
-            <button type="submit" class="btn btn-primary btn-sm">Save Template</button>
-            <button type="button" class="btn btn-ghost btn-sm" onclick="toggleTemplateEditor()">Cancel</button>
-          </div>
-        </form>
-        <p id="edit-builtin-note" class="text-muted" style="font-size:.8em;margin-top:6px;display:none;">
-          Built-in template — saving will modify it permanently.
+
+      <div id="tmpl-editor" style="display:none;margin-top:14px;">
+        <div class="form-group">
+          <label class="label">Template name</label>
+          <input type="text" id="edit-name" class="input">
+        </div>
+        <div class="form-group">
+          <label class="label">Wrapper HTML
+            <span class="text-muted" style="font-weight:400"> — use <code>{articles}</code> and <code>{date}</code></span>
+          </label>
+          <textarea id="edit-html" class="textarea" rows="9"></textarea>
+        </div>
+        <div class="form-group">
+          <label class="label">Article HTML
+            <span class="text-muted" style="font-weight:400"> — use <code>{title}</code> <code>{url}</code> <code>{summary}</code> etc.</span>
+          </label>
+          <textarea id="edit-article-html" class="textarea" rows="6"></textarea>
+        </div>
+
+        <p id="edit-builtin-note" class="text-muted"
+           style="font-size:.8em;padding:6px 8px;background:var(--bg3);border-radius:4px;margin-bottom:10px;display:none;">
+          &#x26A0; Built-in template — edits will modify it permanently.
         </p>
+
+        <div class="btn-group" style="margin-bottom:10px;">
+          <button type="button" class="btn btn-sm btn-primary" onclick="saveExisting()">
+            Save Template
+          </button>
+          <button type="button" class="btn btn-sm btn-outline" onclick="toggleSaveNew()">
+            Save as New&hellip;
+          </button>
+        </div>
+
+        <!-- Save as new panel -->
+        <div id="save-new-panel" class="save-new-panel" style="display:none;">
+          <div class="section-label" style="margin-bottom:8px;">Save as New Template</div>
+          <div class="form-group" style="margin-bottom:8px;">
+            <label class="label">Name</label>
+            <input type="text" id="new-tmpl-name" class="input" placeholder="My Custom Template">
+          </div>
+          <div class="btn-group">
+            <button type="button" class="btn btn-sm btn-primary" onclick="saveAsNew()">Create</button>
+            <button type="button" class="btn btn-sm btn-ghost" onclick="toggleSaveNew()">Cancel</button>
+          </div>
+        </div>
+
       </div>
     </div>
+
+    <a href="/email-templates" class="btn btn-ghost btn-sm" style="width:100%">
+      &#x2699; Manage All Templates
+    </a>
 
   </div>
 
@@ -138,28 +204,29 @@
 <script>
 const dateStr = '{{ date_str }}';
 let currentTemplateId = {{ active_template_id or 'null' }};
+let currentTemplateData = {};
 
 function selectTemplate(id) {
-  document.querySelectorAll('.tmpl-card').forEach(c => c.classList.remove('active'));
-  const card = document.getElementById('tmpl-card-' + id);
-  if (card) card.classList.add('active');
   document.getElementById('tmpl-form-id').value = id;
+  document.getElementById('tmpl-select').value = id;
   currentTemplateId = id;
   reloadPreview();
-  // Load template data into editor if open
-  const editor = document.getElementById('tmpl-editor');
-  if (editor.style.display !== 'none') loadTemplateIntoEditor(id);
+  if (document.getElementById('tmpl-editor').style.display !== 'none') {
+    loadTemplateIntoEditor(id);
+  }
 }
 
 function reloadPreview() {
-  const frame = document.getElementById('email-preview');
-  frame.src = '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '');
+  document.getElementById('email-preview').src =
+    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '');
 }
 
 function toggleTemplateEditor() {
   const editor = document.getElementById('tmpl-editor');
+  const arrow = document.getElementById('editor-arrow');
   const open = editor.style.display !== 'none';
   editor.style.display = open ? 'none' : 'block';
+  arrow.innerHTML = open ? '&#x25BE;' : '&#x25B4;';
   if (!open && currentTemplateId) loadTemplateIntoEditor(currentTemplateId);
 }
 
@@ -167,16 +234,57 @@ function loadTemplateIntoEditor(id) {
   fetch('/email-templates/' + id + '/json')
     .then(r => r.json())
     .then(t => {
+      currentTemplateData = t;
       document.getElementById('edit-name').value = t.name || '';
       document.getElementById('edit-html').value = t.html || '';
       document.getElementById('edit-article-html').value = t.article_html || '';
-      document.getElementById('edit-description').value = t.description || '';
-      document.getElementById('edit-subject-hidden').value = t.subject || '';
-      // Update form action to save to this template
-      document.getElementById('tmpl-save-form').action = '/email-templates/' + id + '/save';
-      const note = document.getElementById('edit-builtin-note');
-      note.style.display = t.is_builtin ? 'block' : 'none';
+      document.getElementById('edit-builtin-note').style.display = t.is_builtin ? 'block' : 'none';
     });
+}
+
+function saveExisting() {
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = '/email-templates/' + currentTemplateId + '/save';
+  appendFields(form, {
+    name:         document.getElementById('edit-name').value,
+    description:  currentTemplateData.description || '',
+    subject:      currentTemplateData.subject || 'SecDigest — {date}',
+    html:         document.getElementById('edit-html').value,
+    article_html: document.getElementById('edit-article-html').value,
+  });
+  document.body.appendChild(form);
+  form.submit();
+}
+
+function toggleSaveNew() {
+  const panel = document.getElementById('save-new-panel');
+  panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function saveAsNew() {
+  const name = document.getElementById('new-tmpl-name').value.trim();
+  if (!name) { document.getElementById('new-tmpl-name').focus(); return; }
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = '/email-templates/new';
+  appendFields(form, {
+    name:         name,
+    description:  '',
+    subject:      currentTemplateData.subject || 'SecDigest — {date}',
+    html:         document.getElementById('edit-html').value,
+    article_html: document.getElementById('edit-article-html').value,
+  });
+  document.body.appendChild(form);
+  form.submit();
+}
+
+function appendFields(form, fields) {
+  for (const [k, v] of Object.entries(fields)) {
+    const i = document.createElement('input');
+    i.type = 'hidden'; i.name = k; i.value = v;
+    form.appendChild(i);
+  }
 }
 </script>
 
@@ -269,6 +377,11 @@ function loadTemplateIntoEditor(id) {
 {% endif %}
 
 <script>
+function toggleAddArticle() {
+  const panel = document.getElementById('add-article-panel');
+  if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
 function toggleEdit(id) {
   const edit = document.getElementById('edit-' + id);
   edit.style.display = edit.style.display === 'none' ? 'block' : 'none';

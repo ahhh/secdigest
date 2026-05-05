@@ -146,6 +146,35 @@ async def day_send(request: Request, date_str: str):
 
 # ── Article actions ───────────────────────────────────────────────────────────
 
+@router.post("/day/{date_str}/article/add")
+async def add_article(request: Request, date_str: str,
+                      url: str = Form(...),
+                      title: str = Form(...),
+                      summary: str = Form(""),
+                      auto_summarize: str = Form("0")):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    newsletter = db.newsletter_get_or_create(date_str)
+    articles = db.article_list(newsletter["id"])
+    position = max((a["position"] for a in articles), default=-1) + 1
+    article_id = db.article_insert(
+        newsletter_id=newsletter["id"],
+        hn_id=None,
+        title=title.strip(),
+        url=url.strip(),
+        hn_score=0,
+        hn_comments=0,
+        relevance_score=10.0,
+        relevance_reason="manually added",
+        position=position,
+    )
+    if summary.strip():
+        db.article_update(article_id, summary=summary.strip())
+    elif auto_summarize == "1":
+        asyncio.create_task(asyncio.to_thread(summarizer.summarize_article, article_id))
+    return RedirectResponse(f"/day/{date_str}", status_code=302)
+
+
 @router.post("/day/{date_str}/article/{article_id}/summary")
 async def update_summary(request: Request, date_str: str, article_id: int,
                          summary: str = Form(...)):
