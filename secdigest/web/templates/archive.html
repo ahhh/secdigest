@@ -4,30 +4,78 @@
 
 <div class="page-header">
   <h1 class="page-title">Archive</h1>
+  <p class="page-sub">Daily issues grouped by month and ISO week. Build a weekly or monthly digest from any group.</p>
 </div>
 
-{% if not newsletters %}
+{% if not months %}
 <div class="empty-state">
   <div class="empty-icon">◎</div>
   <p>No newsletters yet. <a href="/">Go fetch some articles.</a></p>
 </div>
 {% else %}
-<div class="archive-grid">
-  {% for n in newsletters %}
-  <a href="/day/{{ n.date }}" class="archive-card">
-    <div class="archive-date">{{ n.date }}</div>
-    <div class="archive-meta">
-      <span class="badge badge-{{ 'blue' if n.status == 'sent' else ('green' if n.status == 'published' else 'gray') }}">
-        {{ n.status }}
-      </span>
-      <span class="archive-count">{{ counts.get(n.id, 0) }} articles</span>
+
+{% macro digest_chip(d, counts, kind, anchor) -%}
+  {%- if d -%}
+    <a href="/{{ kind }}/{{ anchor }}" class="badge badge-{{ 'blue' if d.status == 'sent' else 'green' }}"
+       style="text-decoration:none;margin-left:8px;">
+      {{ kind }} digest · {{ counts.get(d.id, 0) }} {% if d.status == 'sent' %}sent{% else %}draft{% endif %}
+    </a>
+  {%- else -%}
+    <a href="/{{ kind }}/{{ anchor }}" class="badge badge-gray"
+       style="text-decoration:none;margin-left:8px;">+ build {{ kind }}</a>
+  {%- endif -%}
+{%- endmacro %}
+
+{% for m in months %}
+<details class="archive-month" open>
+  <summary class="archive-month-header">
+    <span class="archive-month-label">{{ m.label }}</span>
+    {{ digest_chip(m.monthly_digest, monthly_counts, 'month', m.first) }}
+  </summary>
+
+  {% for w in m.weeks %}
+  <div class="archive-week">
+    <div class="archive-week-header">
+      <span class="archive-week-label mono">{{ w.label }}</span>
+      <span class="text-muted" style="font-size:.8em;">{{ w.monday }} → {{ w.sunday }}</span>
+      {{ digest_chip(w.weekly_digest, weekly_counts, 'week', w.monday) }}
     </div>
-    {% if n.sent_at %}
-    <div class="archive-sent">Sent {{ n.sent_at[:16] }}</div>
-    {% endif %}
-  </a>
+
+    <div class="archive-grid">
+      {% for n in w.days %}
+      <a href="/day/{{ n.date }}" class="archive-card">
+        <div class="archive-date">{{ n.date }}</div>
+        <div class="archive-meta">
+          <span class="badge badge-{{ 'blue' if n.status == 'sent' else ('green' if n.status == 'published' else 'gray') }}">
+            {{ n.status }}
+          </span>
+          <span class="archive-count">{{ daily_counts.get(n.id, 0) }} articles</span>
+        </div>
+        {% if n.sent_at %}
+        <div class="archive-sent">Sent {{ n.sent_at[:16] }}</div>
+        {% endif %}
+      </a>
+      {% endfor %}
+    </div>
+  </div>
   {% endfor %}
-</div>
+</details>
+{% endfor %}
 {% endif %}
+
+<style>
+.archive-month { margin-bottom: 24px; border:1px solid var(--border, #30363d); border-radius:8px; padding:0; }
+.archive-month[open] > .archive-month-header { border-bottom:1px solid var(--border, #30363d); }
+.archive-month-header { padding:14px 18px; cursor:pointer; font-size:1.05em; font-weight:600;
+                         display:flex; align-items:center; gap:8px; list-style:none; }
+.archive-month-header::-webkit-details-marker { display:none; }
+.archive-month-header::before { content:'▸'; display:inline-block; transition:transform .15s; color:var(--muted,#6e7681); }
+.archive-month[open] > .archive-month-header::before { transform:rotate(90deg); }
+.archive-month-label { flex:0 0 auto; }
+.archive-week { padding:14px 18px; border-bottom:1px solid var(--border, #21262d); }
+.archive-week:last-child { border-bottom:none; }
+.archive-week-header { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+.archive-week-label { font-weight:600; font-size:.9em; color:var(--muted,#6e7681); }
+</style>
 
 {% endblock %}

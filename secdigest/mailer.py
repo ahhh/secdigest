@@ -128,15 +128,36 @@ def _render_text(newsletter: dict, articles: list[dict], unsubscribe_url: str = 
     return "\n".join(lines)
 
 
-def send_test_email(date_str: str, recipient: str) -> tuple[bool, str]:
+def _load_for_send(date_str: str, kind: str) -> tuple[dict | None, list[dict]]:
+    """Resolve the newsletter row + the article list to render, kind-aware.
+    Daily newsletters own their articles directly; weekly/monthly digests pull from
+    the digest_articles join."""
+    newsletter = db.newsletter_get(date_str, kind=kind)
+    if not newsletter:
+        return None, []
+    if kind == "daily":
+        articles = db.article_list(newsletter["id"])
+    else:
+        articles = db.digest_article_list(newsletter["id"])
+    return newsletter, articles
+
+
+def _default_subject_for(kind: str) -> str:
+    if kind == "weekly":
+        return "SecDigest Weekly — {date}"
+    if kind == "monthly":
+        return "SecDigest Monthly — {date}"
+    return "SecDigest — {date}"
+
+
+def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple[bool, str]:
     """Send a single test copy of the newsletter to one address.
     Output is identical to a production send (same template, subject, and TOC setting),
     except the unsubscribe link uses a non-DB token so it shows as invalid if clicked."""
-    newsletter = db.newsletter_get(date_str)
+    newsletter, articles = _load_for_send(date_str, kind)
     if not newsletter:
-        return False, f"No newsletter found for {date_str}"
+        return False, f"No {kind} newsletter found for {date_str}"
 
-    articles = db.article_list(newsletter["id"])
     if not any(a.get("included", 1) for a in articles):
         return False, "No included articles to send"
 
@@ -151,7 +172,7 @@ def send_test_email(date_str: str, recipient: str) -> tuple[bool, str]:
 
     subject_override = db.newsletter_get_subject(newsletter["id"])
     template = db.email_template_get(db.newsletter_get_template_id(newsletter["id"]) or 0)
-    default_subject = template["subject"] if template else "SecDigest — {date}"
+    default_subject = template["subject"] if template else _default_subject_for(kind)
     subject = (subject_override or default_subject).replace("{date}", date_str)
 
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
@@ -199,19 +220,18 @@ def send_test_email(date_str: str, recipient: str) -> tuple[bool, str]:
     return True, f"Test email sent to {recipient}"
 
 
-def send_newsletter(date_str: str) -> tuple[bool, str]:
-    """Send the newsletter for date_str to all active subscribers."""
-    newsletter = db.newsletter_get(date_str)
+def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
+    """Send the newsletter for date_str to active subscribers whose cadence matches kind."""
+    newsletter, articles = _load_for_send(date_str, kind)
     if not newsletter:
-        return False, f"No newsletter found for {date_str}"
+        return False, f"No {kind} newsletter found for {date_str}"
 
-    articles = db.article_list(newsletter["id"])
     if not any(a.get("included", 1) for a in articles):
         return False, "No included articles to send"
 
-    subscribers = db.subscriber_active()
+    subscribers = db.subscriber_active(cadence=kind)
     if not subscribers:
-        return False, "No active subscribers"
+        return False, f"No active {kind} subscribers"
 
     cfg = db.cfg_all()
     smtp_host = cfg.get("smtp_host", "")
@@ -220,7 +240,7 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
 
     subject_override = db.newsletter_get_subject(newsletter["id"])
     template = db.email_template_get(db.newsletter_get_template_id(newsletter["id"]) or 0)
-    default_subject = template["subject"] if template else "SecDigest — {date}"
+    default_subject = template["subject"] if template else _default_subject_for(kind)
     subject = (subject_override or default_subject).replace("{date}", date_str)
 
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")

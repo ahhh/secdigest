@@ -12,11 +12,15 @@ PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS newsletters (
-    id          INTEGER PRIMARY KEY,
-    date        TEXT    UNIQUE NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'draft',
-    sent_at     TIMESTAMP,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id           INTEGER PRIMARY KEY,
+    kind         TEXT    NOT NULL DEFAULT 'daily',
+    date         TEXT    NOT NULL,
+    period_start TEXT    NOT NULL,
+    period_end   TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'draft',
+    sent_at      TIMESTAMP,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(kind, period_start)
 );
 
 CREATE TABLE IF NOT EXISTS articles (
@@ -34,7 +38,17 @@ CREATE TABLE IF NOT EXISTS articles (
     position        INTEGER DEFAULT 0,
     included        INTEGER DEFAULT 1,
     source          TEXT    DEFAULT 'hn',
+    pin_weekly      INTEGER DEFAULT 0,
+    pin_monthly     INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS digest_articles (
+    digest_id  INTEGER NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    article_id INTEGER NOT NULL REFERENCES articles(id)    ON DELETE CASCADE,
+    position   INTEGER DEFAULT 0,
+    included   INTEGER DEFAULT 1,
+    PRIMARY KEY (digest_id, article_id)
 );
 
 CREATE TABLE IF NOT EXISTS rss_feeds (
@@ -60,6 +74,7 @@ CREATE TABLE IF NOT EXISTS subscribers (
     email             TEXT    UNIQUE NOT NULL,
     name              TEXT    DEFAULT '',
     active            INTEGER DEFAULT 1,
+    cadence           TEXT    NOT NULL DEFAULT 'daily',
     unsubscribe_token TEXT,
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -390,6 +405,9 @@ def init_db():
         _migrate_add_grid_template(conn)
         _migrate_add_mobile_templates(conn)
         _migrate_builtin_remove_hn_points(conn)
+        _migrate_newsletters_kind(conn)
+        _migrate_article_pins(conn)
+        _migrate_subscriber_cadence(conn)
 
 
 def _seed_config(conn):
@@ -466,6 +484,54 @@ def _migrate_builtin_remove_hn_links(conn):
             changed = True
     if changed:
         conn.commit()
+
+
+def _migrate_newsletters_kind(conn):
+    """Rebuild legacy newsletters table to add kind/period columns and drop UNIQUE(date)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(newsletters)").fetchall()}
+    if "kind" in cols:
+        return
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE newsletters_new (
+                id           INTEGER PRIMARY KEY,
+                kind         TEXT    NOT NULL DEFAULT 'daily',
+                date         TEXT    NOT NULL,
+                period_start TEXT    NOT NULL,
+                period_end   TEXT    NOT NULL,
+                status       TEXT    NOT NULL DEFAULT 'draft',
+                sent_at      TIMESTAMP,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(kind, period_start)
+            );
+            INSERT INTO newsletters_new(id, kind, date, period_start, period_end, status, sent_at, created_at)
+                SELECT id, 'daily', date, date, date, status, sent_at, created_at FROM newsletters;
+            DROP TABLE newsletters;
+            ALTER TABLE newsletters_new RENAME TO newsletters;
+        """)
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_article_pins(conn):
+    """Add pin_weekly/pin_monthly columns to articles for older DBs."""
+    for col in ("pin_weekly", "pin_monthly"):
+        try:
+            conn.execute(f"ALTER TABLE articles ADD COLUMN {col} INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+
+
+def _migrate_subscriber_cadence(conn):
+    """Add cadence column to subscribers for older DBs."""
+    try:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN cadence TEXT NOT NULL DEFAULT 'daily'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 
 def _migrate_builtin_remove_hn_points(conn):
@@ -585,19 +651,35 @@ def cfg_all() -> dict:
 
 # ── Newsletters ───────────────────────────────────────────────────────────────
 
-def newsletter_get_or_create(date_str: str) -> dict:
+def newsletter_get_or_create(date_str: str, kind: str = "daily",
+                              period_start: str | None = None,
+                              period_end: str | None = None) -> dict:
+    """Get or create a newsletter row. For digests, period_start/end define the window;
+    for daily, all three default to date_str."""
     conn = _get_conn()
-    row = conn.execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone()
+    period_start = period_start or date_str
+    period_end = period_end or date_str
+    row = conn.execute(
+        "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
+    ).fetchone()
     if row:
         return dict(row)
     with _lock:
-        conn.execute("INSERT OR IGNORE INTO newsletters(date) VALUES(?)", (date_str,))
+        conn.execute(
+            "INSERT OR IGNORE INTO newsletters(kind, date, period_start, period_end) VALUES(?,?,?,?)",
+            (kind, date_str, period_start, period_end),
+        )
         conn.commit()
-    return dict(conn.execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone())
+    return dict(conn.execute(
+        "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
+    ).fetchone())
 
 
-def newsletter_get(date_str: str) -> dict | None:
-    row = _get_conn().execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone()
+def newsletter_get(date_str: str, kind: str = "daily") -> dict | None:
+    """Look up a newsletter by its period_start (which equals date for daily)."""
+    row = _get_conn().execute(
+        "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, date_str)
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -614,10 +696,17 @@ def newsletter_update(id: int, **kwargs):
         _get_conn().commit()
 
 
-def newsletter_list(limit: int = 60) -> list[dict]:
-    rows = _get_conn().execute(
-        "SELECT * FROM newsletters ORDER BY date DESC LIMIT ?", (limit,)
-    ).fetchall()
+def newsletter_list(limit: int = 60, kind: str | None = "daily") -> list[dict]:
+    """List newsletters of the given kind, newest first. Pass kind=None for all kinds."""
+    if kind is None:
+        rows = _get_conn().execute(
+            "SELECT * FROM newsletters ORDER BY period_start DESC LIMIT ?", (limit,)
+        ).fetchall()
+    else:
+        rows = _get_conn().execute(
+            "SELECT * FROM newsletters WHERE kind=? ORDER BY period_start DESC LIMIT ?",
+            (kind, limit),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -720,6 +809,138 @@ def article_all_urls() -> set[str]:
     return {r[0] for r in rows}
 
 
+def article_set_pin(article_id: int, period: str, pinned: bool):
+    """period is 'weekly' or 'monthly'."""
+    if period not in ("weekly", "monthly"):
+        raise ValueError(f"article_set_pin: bad period {period!r}")
+    col = f"pin_{period}"
+    with _lock:
+        _get_conn().execute(f"UPDATE articles SET {col}=? WHERE id=?", (1 if pinned else 0, article_id))
+        _get_conn().commit()
+
+
+def articles_in_period(period_start: str, period_end: str) -> list[dict]:
+    """All articles from daily newsletters whose date falls within [period_start, period_end]."""
+    rows = _get_conn().execute(
+        """SELECT a.* FROM articles a
+           JOIN newsletters n ON n.id = a.newsletter_id
+           WHERE n.kind='daily' AND n.date >= ? AND n.date <= ?
+           ORDER BY n.date DESC, a.relevance_score DESC""",
+        (period_start, period_end),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Digest articles (weekly / monthly join) ───────────────────────────────────
+
+def digest_article_list(digest_id: int) -> list[dict]:
+    """Articles in a digest, in display order. Each row carries the article fields plus
+    digest-specific position/included from the join table."""
+    rows = _get_conn().execute(
+        """SELECT a.*, da.position AS d_position, da.included AS d_included,
+                  n.date AS source_date
+           FROM digest_articles da
+           JOIN articles a ON a.id = da.article_id
+           JOIN newsletters n ON n.id = a.newsletter_id
+           WHERE da.digest_id = ?
+           ORDER BY da.position ASC""",
+        (digest_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Overlay the digest's position/included onto the article view used by the renderer
+        d["position"] = d.pop("d_position")
+        d["included"] = d.pop("d_included")
+        out.append(d)
+    return out
+
+
+def digest_article_add(digest_id: int, article_id: int, position: int = 0, included: int = 1):
+    with _lock:
+        _get_conn().execute(
+            """INSERT OR IGNORE INTO digest_articles(digest_id, article_id, position, included)
+               VALUES (?,?,?,?)""",
+            (digest_id, article_id, position, included),
+        )
+        _get_conn().commit()
+
+
+def digest_article_remove(digest_id: int, article_id: int):
+    with _lock:
+        _get_conn().execute(
+            "DELETE FROM digest_articles WHERE digest_id=? AND article_id=?",
+            (digest_id, article_id),
+        )
+        _get_conn().commit()
+
+
+def digest_article_toggle(digest_id: int, article_id: int):
+    """Flip included 0↔1 for one article in a digest."""
+    row = _get_conn().execute(
+        "SELECT included FROM digest_articles WHERE digest_id=? AND article_id=?",
+        (digest_id, article_id),
+    ).fetchone()
+    if not row:
+        return
+    with _lock:
+        _get_conn().execute(
+            "UPDATE digest_articles SET included=? WHERE digest_id=? AND article_id=?",
+            (0 if row[0] else 1, digest_id, article_id),
+        )
+        _get_conn().commit()
+
+
+def digest_article_reorder(digest_id: int, ordered_ids: list[int]):
+    with _lock:
+        for pos, aid in enumerate(ordered_ids):
+            _get_conn().execute(
+                "UPDATE digest_articles SET position=? WHERE digest_id=? AND article_id=?",
+                (pos, digest_id, aid),
+            )
+        _get_conn().commit()
+
+
+def digest_article_count(digest_id: int) -> int:
+    row = _get_conn().execute(
+        "SELECT COUNT(*) FROM digest_articles WHERE digest_id=?", (digest_id,)
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def digest_seed(digest_id: int, kind: str, period_start: str, period_end: str, top_n: int):
+    """Populate digest_articles for a fresh digest:
+       1. every article pinned for this period (included=1)
+       2. then top-N-by-relevance from remaining curated daily articles, until reaching top_n total
+    """
+    if kind not in ("weekly", "monthly"):
+        raise ValueError(f"digest_seed: bad kind {kind!r}")
+    pin_col = "pin_weekly" if kind == "weekly" else "pin_monthly"
+
+    pool = articles_in_period(period_start, period_end)
+    # Daily curator's `included` flag means "in the daily newsletter"; we use it as a
+    # quality gate (curator already vetted these). Pinned articles bypass the gate.
+    pinned = [a for a in pool if a.get(pin_col, 0)]
+    pinned_ids = {a["id"] for a in pinned}
+    candidates = [a for a in pool
+                  if a["id"] not in pinned_ids
+                  and a.get("included", 1)]
+    candidates.sort(key=lambda a: a.get("relevance_score", 0), reverse=True)
+
+    # Pinned first (position by source date desc — matches the SQL ORDER), then top-N fillers
+    selected = list(pinned) + candidates[: max(0, top_n - len(pinned))]
+
+    with _lock:
+        conn = _get_conn()
+        conn.execute("DELETE FROM digest_articles WHERE digest_id=?", (digest_id,))
+        for pos, a in enumerate(selected):
+            conn.execute(
+                "INSERT INTO digest_articles(digest_id, article_id, position, included) VALUES (?,?,?,1)",
+                (digest_id, a["id"], pos),
+            )
+        conn.commit()
+
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 def prompt_list(type_filter: str | None = None) -> list[dict]:
@@ -782,10 +1003,12 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
 def subscriber_update(id: int, **kwargs):
     if not kwargs:
         return
-    allowed = {"active", "name"}
+    allowed = {"active", "name", "cadence"}
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"subscriber_update: disallowed columns {bad}")
+    if "cadence" in kwargs and kwargs["cadence"] not in ("daily", "weekly", "monthly"):
+        raise ValueError(f"subscriber_update: bad cadence {kwargs['cadence']!r}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -798,10 +1021,15 @@ def subscriber_delete(id: int):
         _get_conn().commit()
 
 
-def subscriber_active() -> list[dict]:
-    return [dict(r) for r in _get_conn().execute(
-        "SELECT * FROM subscribers WHERE active=1"
-    ).fetchall()]
+def subscriber_active(cadence: str | None = None) -> list[dict]:
+    """Active subscribers, optionally filtered to a single cadence."""
+    if cadence is None:
+        rows = _get_conn().execute("SELECT * FROM subscribers WHERE active=1").fetchall()
+    else:
+        rows = _get_conn().execute(
+            "SELECT * FROM subscribers WHERE active=1 AND cadence=?", (cadence,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def subscriber_get_by_token(token: str) -> dict | None:

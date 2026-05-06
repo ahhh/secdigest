@@ -225,6 +225,25 @@ a:hover { text-decoration: underline; }
 .hn-score { color: var(--orange); }
 .relevance-reason { cursor: help; color: var(--blue); }
 
+.pin-chip {
+  display: inline-block;
+  min-width: 18px;
+  padding: 0 5px;
+  height: 18px;
+  line-height: 16px;
+  font-size: 0.75em;
+  font-family: monospace;
+  font-weight: 700;
+  border-radius: 4px;
+  border: 1px solid var(--border, #30363d);
+  background: transparent;
+  color: var(--muted, #6e7681);
+  cursor: pointer;
+  vertical-align: middle;
+}
+.pin-chip:hover { color: var(--fg, #c9d1d9); border-color: var(--blue, #58a6ff); }
+.pin-chip.pin-on { background: var(--blue, #58a6ff); color: #0d1117; border-color: var(--blue, #58a6ff); }
+
 .article-title {
   display: block;
   font-size: 1em;

@@ -4,8 +4,14 @@
 
 <div class="page-header">
   <h1 class="page-title">Subscribers</h1>
-  <p class="page-sub">{{ subscribers | selectattr('active') | list | length }} active
-    · {{ subscribers | length }} total</p>
+  {% set actives = subscribers | selectattr('active') | list %}
+  <p class="page-sub">{{ actives | length }} active · {{ subscribers | length }} total
+    {% if actives %}
+    · daily {{ actives | selectattr('cadence', 'equalto', 'daily') | list | length }}
+    · weekly {{ actives | selectattr('cadence', 'equalto', 'weekly') | list | length }}
+    · monthly {{ actives | selectattr('cadence', 'equalto', 'monthly') | list | length }}
+    {% endif %}
+  </p>
 </div>
 
 <div class="form-card" style="max-width:480px">
@@ -46,6 +52,7 @@
     <tr>
       <th>Email</th>
       <th>Name</th>
+      <th>Cadence</th>
       <th>Status</th>
       <th>Added</th>
       <th></th>
@@ -57,6 +64,17 @@
         data-search="{{ (s.email ~ ' ' ~ (s.name or '')) | lower }}">
       <td class="mono">{{ s.email }}</td>
       <td>{{ s.name or '—' }}</td>
+      <td>
+        <form action="/subscribers/{{ s.id }}/cadence" method="post" style="display:inline">
+          {{ csrf_input(request) }}
+          <select name="cadence" class="input" style="padding:4px 8px;font-size:.85em;width:auto;"
+                  onchange="this.form.submit()">
+            {% for c in ['daily', 'weekly', 'monthly'] %}
+            <option value="{{ c }}" {% if (s.cadence or 'daily') == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </form>
+      </td>
       <td>
         <span class="badge badge-{{ 'green' if s.active else 'gray' }}">
           {{ 'active' if s.active else 'paused' }}
@@ -83,7 +101,7 @@
   </tbody>
   <tfoot>
     <tr id="sub-empty-row" hidden>
-      <td colspan="5" class="text-muted" style="text-align:center;padding:18px;">
+      <td colspan="6" class="text-muted" style="text-align:center;padding:18px;">
         No subscribers match this filter.
       </td>
     </tr>

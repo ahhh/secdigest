@@ -47,6 +47,16 @@ async def toggle_subscriber(request: Request, sub_id: int):
     return RedirectResponse("/subscribers", status_code=302)
 
 
+@router.post("/subscribers/{sub_id}/cadence")
+async def set_cadence(request: Request, sub_id: int, cadence: str = Form(...)):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    if cadence not in ("daily", "weekly", "monthly"):
+        return RedirectResponse("/subscribers?msg=Bad+cadence&status=error", status_code=302)
+    db.subscriber_update(sub_id, cadence=cadence)
+    return RedirectResponse("/subscribers", status_code=302)
+
+
 @router.post("/subscribers/{sub_id}/delete")
 async def delete_subscriber(request: Request, sub_id: int):
     if not is_authed(request):
