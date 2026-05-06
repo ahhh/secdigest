@@ -128,6 +128,77 @@ def _render_text(newsletter: dict, articles: list[dict], unsubscribe_url: str = 
     return "\n".join(lines)
 
 
+def send_test_email(date_str: str, recipient: str) -> tuple[bool, str]:
+    """Send a single test copy of the newsletter to one address.
+    Output is identical to a production send (same template, subject, and TOC setting),
+    except the unsubscribe link uses a non-DB token so it shows as invalid if clicked."""
+    newsletter = db.newsletter_get(date_str)
+    if not newsletter:
+        return False, f"No newsletter found for {date_str}"
+
+    articles = db.article_list(newsletter["id"])
+    if not any(a.get("included", 1) for a in articles):
+        return False, "No included articles to send"
+
+    recipient = (recipient or "").replace("\r", "").replace("\n", "").strip()
+    if not recipient or "@" not in recipient:
+        return False, "Invalid recipient email"
+
+    cfg = db.cfg_all()
+    smtp_host = cfg.get("smtp_host", "")
+    if not smtp_host:
+        return False, "SMTP not configured — set smtp_host in Settings"
+
+    subject_override = db.newsletter_get_subject(newsletter["id"])
+    template = db.email_template_get(db.newsletter_get_template_id(newsletter["id"]) or 0)
+    default_subject = template["subject"] if template else "SecDigest — {date}"
+    subject = (subject_override or default_subject).replace("{date}", date_str)
+
+    smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
+    if "example.com" in smtp_from:
+        return False, "From address is not configured (still using example.com)"
+    subject = subject.replace("\r", "").replace("\n", "")
+    smtp_from = smtp_from.replace("\r", "").replace("\n", "")
+
+    base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
+    include_toc = db.newsletter_get_toc(newsletter["id"])
+    unsub_url = f"{base_url}/unsubscribe/test-preview"
+
+    html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url, include_toc=include_toc)
+    text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
+
+    port = int(cfg.get("smtp_port", 587))
+    smtp_user = cfg.get("smtp_user", "")
+    smtp_pass = cfg.get("smtp_pass", "")
+    tls_context = ssl.create_default_context()
+
+    try:
+        if port == 465:
+            _server = smtplib.SMTP_SSL(smtp_host, port, context=tls_context)
+        else:
+            _server = smtplib.SMTP(smtp_host, port)
+
+        with _server as server:
+            server.ehlo()
+            if port != 465:
+                server.starttls(context=tls_context)
+                server.ehlo()
+            if smtp_user:
+                server.login(smtp_user, crypto.decrypt(smtp_pass))
+
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = smtp_from
+            msg["To"] = recipient
+            msg.attach(MIMEText(text_body, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+            server.send_message(msg)
+    except Exception as e:
+        return False, f"SMTP error: {e}"
+
+    return True, f"Test email sent to {recipient}"
+
+
 def send_newsletter(date_str: str) -> tuple[bool, str]:
     """Send the newsletter for date_str to all active subscribers."""
     newsletter = db.newsletter_get(date_str)

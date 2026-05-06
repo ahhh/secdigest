@@ -139,6 +139,24 @@
       </form>
     </div>
 
+    <!-- Send test email -->
+    <div class="builder-section">
+      <div class="section-label" style="margin-bottom:8px;">Send Test</div>
+      <form action="/day/{{ date_str }}/send-test" method="post">
+        {{ csrf_input(request) }}
+        <div class="form-group" style="margin-bottom:8px;">
+          <input type="email" name="test_recipient" class="input" required
+                 placeholder="you@example.com" autocomplete="email">
+        </div>
+        <button type="submit" class="btn btn-outline btn-sm" style="width:100%">
+          &#x2709; Send Test Email
+        </button>
+      </form>
+      <p class="text-muted" style="font-size:.75em;margin-top:8px;line-height:1.4;">
+        One copy to that address using the current template, subject, and articles.
+      </p>
+    </div>
+
     <!-- Inline template editor -->
     <div class="builder-section">
       <button class="btn btn-ghost btn-sm" style="width:100%;justify-content:space-between"

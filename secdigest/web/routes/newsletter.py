@@ -157,6 +157,19 @@ async def day_send(request: Request, date_str: str):
     )
 
 
+@router.post("/day/{date_str}/send-test")
+async def day_send_test(request: Request, date_str: str,
+                        test_recipient: str = Form(...)):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    ok, msg = mailer.send_test_email(date_str, test_recipient)
+    status = "ok" if ok else "error"
+    return RedirectResponse(
+        f"/day/{date_str}?view=builder&msg={msg.replace(' ', '+')}&status={status}",
+        status_code=302,
+    )
+
+
 @router.get("/day/{date_str}/pool", response_class=HTMLResponse)
 async def day_pool(request: Request, date_str: str):
     if not is_authed(request):
