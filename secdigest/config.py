@@ -3,6 +3,15 @@ from pathlib import Path
 
 # Project root is two levels up from this file (secdigest/config.py → secdigest/ → root)
 PROJECT_ROOT = Path(__file__).parent.parent
+
+# Load .env from project root if present. Real env vars take precedence (override=False),
+# so production deployments using systemd's EnvironmentFile or Docker --env keep working.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+except ImportError:
+    pass
+
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
 

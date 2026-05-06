@@ -43,8 +43,7 @@ cp .env.example .env
 #   SECRET_KEY=<random string>
 #   ANTHROPIC_API_KEY=sk-ant-...
 
-# 4. Run
-source .env
+# 4. Run (.env is auto-loaded from the project root)
 python run.py
 ```
 
