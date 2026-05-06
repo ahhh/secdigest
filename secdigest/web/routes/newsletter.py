@@ -2,14 +2,15 @@
 import asyncio
 from datetime import date as dt_date
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from secdigest import db, fetcher, summarizer, mailer
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
+from secdigest.web.csrf import verify_csrf
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 
 def _today() -> str:
@@ -95,10 +96,15 @@ async def day_fetch(request: Request, date_str: str):
 async def day_preview(request: Request, date_str: str, template_id: int = 0, include_toc: int = 0):
     if not is_authed(request):
         return HTMLResponse("", status_code=401)
+    _preview_headers = {
+        "Content-Security-Policy": "sandbox; default-src 'none'; img-src https: data:; style-src 'unsafe-inline'",
+        "X-Frame-Options": "SAMEORIGIN",
+    }
     newsletter = db.newsletter_get(date_str)
     _placeholder = lambda msg: HTMLResponse(
         f'<!DOCTYPE html><html><body style="margin:0;padding:40px;background:#0d1117;'
-        f'color:#6e7681;font-family:monospace;text-align:center;"><p>{msg}</p></body></html>'
+        f'color:#6e7681;font-family:monospace;text-align:center;"><p>{msg}</p></body></html>',
+        headers=_preview_headers,
     )
     if not newsletter:
         return _placeholder("No newsletter for this date.")
@@ -106,7 +112,10 @@ async def day_preview(request: Request, date_str: str, template_id: int = 0, inc
     if not any(a.get("included", 1) for a in articles):
         return _placeholder("No included articles yet — add them in the Curator tab.")
     tid = template_id or None
-    return HTMLResponse(mailer.render_email_html(newsletter, articles, tid, include_toc=bool(include_toc)))
+    return HTMLResponse(
+        mailer.render_email_html(newsletter, articles, tid, include_toc=bool(include_toc)),
+        headers=_preview_headers,
+    )
 
 
 @router.post("/day/{date_str}/set-template")

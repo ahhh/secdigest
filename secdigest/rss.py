@@ -3,6 +3,8 @@ import re
 import httpx
 from xml.etree import ElementTree as ET
 
+from secdigest.web.security import is_safe_external_url
+
 _ATOM_NS = 'http://www.w3.org/2005/Atom'
 
 
@@ -34,8 +36,10 @@ def _parse_atom(root: ET.Element, max_articles: int) -> list[dict]:
 
 def fetch_feed(url: str, max_articles: int = 5) -> list[dict]:
     """Fetch and parse a single RSS/Atom feed. Returns [{title, url}]."""
+    if not is_safe_external_url(url):
+        return []
     try:
-        with httpx.Client(follow_redirects=True, timeout=10,
+        with httpx.Client(follow_redirects=False, timeout=10,
                           headers={"User-Agent": "Mozilla/5.0 (compatible; SecDigest/1.0)"}) as client:
             resp = client.get(url)
         if resp.status_code != 200:

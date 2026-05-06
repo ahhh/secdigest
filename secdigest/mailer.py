@@ -1,11 +1,12 @@
 """Send newsletter emails via SMTP."""
+import html
 import smtplib
 import ssl
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from secdigest import db
+from secdigest import db, crypto
 
 
 def _render_toc(included: list[dict], is_2col: bool = False) -> str:
@@ -14,7 +15,7 @@ def _render_toc(included: list[dict], is_2col: bool = False) -> str:
         f'<div style="margin-bottom:5px;">'
         f'<a href="#article-{i+1}" style="color:#58a6ff;text-decoration:none;font-size:.85em;line-height:1.4;">'
         f'<span style="font-family:monospace;color:#6e7681;margin-right:6px;">#{i+1}</span>'
-        f'{a.get("title", "")}'
+        f'{html.escape(a.get("title", ""), quote=True)}'
         f'</a></div>'
         for i, a in enumerate(included)
     )
@@ -30,13 +31,22 @@ def _render_toc(included: list[dict], is_2col: bool = False) -> str:
 
 
 def _render_article(article_html: str, a: dict, n: int) -> str:
-    url = a.get("url") or a.get("hn_url") or ""
-    summary = a.get("summary") or "<em>No summary generated.</em>"
+    raw_url = a.get("url") or a.get("hn_url") or ""
+    raw_hn_url = a.get("hn_url") or ""
+    # Only allow http(s) URLs in href positions
+    safe_url = raw_url if raw_url.startswith(("http://", "https://")) else ""
+    safe_hn_url = raw_hn_url if raw_hn_url.startswith(("http://", "https://")) else ""
+
+    title = html.escape(a.get("title", ""), quote=True)
+    summary = html.escape(a.get("summary") or "No summary generated.", quote=True)
+    safe_url_attr = html.escape(safe_url, quote=True)
+    safe_hn_url_attr = html.escape(safe_hn_url, quote=True)
+
     s = article_html
     s = s.replace("{number}", str(n))
-    s = s.replace("{title}", a.get("title", ""))
-    s = s.replace("{url}", url)
-    s = s.replace("{hn_url}", a.get("hn_url") or "")
+    s = s.replace("{title}", title)
+    s = s.replace("{url}", safe_url_attr)
+    s = s.replace("{hn_url}", safe_hn_url_attr)
     s = s.replace("{summary}", summary)
     s = s.replace("{hn_score}", str(a.get("hn_score", 0)))
     s = s.replace("{hn_comments}", str(a.get("hn_comments", 0)))
@@ -92,12 +102,12 @@ def render_email_html(newsletter: dict, articles: list[dict],
         rows_1col = toc + rows_1col
         rows_2col = toc + rows_2col
 
-    html = template["html"]
-    html = html.replace("{articles}", rows_1col)
-    html = html.replace("{articles_2col}", rows_2col)
-    html = html.replace("{date}", newsletter["date"])
-    html = html.replace("{unsubscribe_url}", unsubscribe_url)
-    return html
+    body = template["html"]
+    body = body.replace("{articles}", rows_1col)
+    body = body.replace("{articles_2col}", rows_2col)
+    body = body.replace("{date}", newsletter["date"])
+    body = body.replace("{unsubscribe_url}", unsubscribe_url)
+    return body
 
 
 def _render_text(newsletter: dict, articles: list[dict], unsubscribe_url: str = "") -> str:
@@ -143,6 +153,11 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
     subject = (subject_override or default_subject).replace("{date}", date_str)
 
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
+    if "example.com" in smtp_from:
+        return False, "From address is not configured (still using example.com)"
+    # Strip CRLF to prevent header injection
+    subject = subject.replace("\r", "").replace("\n", "")
+    smtp_from = smtp_from.replace("\r", "").replace("\n", "")
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
     include_toc = db.newsletter_get_toc(newsletter["id"])
 
@@ -164,16 +179,20 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
                 server.starttls(context=tls_context)
                 server.ehlo()
             if smtp_user:
-                server.login(smtp_user, smtp_pass)
+                server.login(smtp_user, crypto.decrypt(smtp_pass))
             for sub in subscribers:
                 token = sub.get("unsubscribe_token", "")
                 unsub_url = f"{base_url}/unsubscribe/{token}" if token else ""
                 html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url, include_toc=include_toc)
                 text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
+                to_email = (sub["email"] or "").replace("\r", "").replace("\n", "").strip()
+                if not to_email or "@" not in to_email:
+                    errors.append(f"{sub['email']}: invalid email")
+                    continue
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = subject
                 msg["From"] = smtp_from
-                msg["To"] = sub["email"]
+                msg["To"] = to_email
                 msg.attach(MIMEText(text_body, "plain"))
                 msg.attach(MIMEText(html_body, "html"))
                 try:

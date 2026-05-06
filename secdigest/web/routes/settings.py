@@ -1,15 +1,16 @@
 """Routes: settings page and configuration save."""
 import smtplib
 import ssl
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from secdigest import db
+from secdigest import crypto, db
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login, hash_password
+from secdigest.web.csrf import verify_csrf
 import secdigest.scheduler as sched
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 
 def _humanize_errors(cfg: dict) -> list[dict]:
@@ -63,7 +64,7 @@ async def save_settings(request: Request):
             db.cfg_set(field, form[field])
 
     if form.get("smtp_pass"):
-        db.cfg_set("smtp_pass", form["smtp_pass"])
+        db.cfg_set("smtp_pass", crypto.encrypt(form["smtp_pass"]))
 
     db.cfg_set("auto_send", "1" if form.get("auto_send") else "0")
 
@@ -83,7 +84,7 @@ async def test_smtp(request: Request):
     host = cfg.get("smtp_host", "")
     port = int(cfg.get("smtp_port", 587))
     user = cfg.get("smtp_user", "")
-    password = cfg.get("smtp_pass", "")
+    password = crypto.decrypt(cfg.get("smtp_pass", ""))
     steps = []
 
     def step(label, ok, msg):
@@ -93,7 +94,7 @@ async def test_smtp(request: Request):
         step("Config", False, "smtp_host is not set")
         return JSONResponse({"ok": False, "steps": steps})
 
-    step("Config", True, f"{host}:{port}  user={user or '(none)'}  pass={'*' * len(password) or '(none)'}")
+    step("Config", True, f"{host}:{port}  user={user or '(none)'}  pass={'set' if password else 'not set'}")
 
     context = ssl.create_default_context()
     server = None

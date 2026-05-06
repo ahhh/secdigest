@@ -20,22 +20,26 @@
   <div class="btn-group">
     {% if view == 'curator' %}
     <form action="/day/{{ date_str }}/fetch" method="post" style="display:inline">
+      {{ csrf_input(request) }}
       <button class="btn btn-outline">&#x2193; Fetch HN</button>
     </form>
     <button class="btn btn-outline" onclick="toggleAddArticle()">+ Add Article</button>
     {% if articles %}
     <form action="/day/{{ date_str }}/summarize" method="post" style="display:inline">
+      {{ csrf_input(request) }}
       <button class="btn btn-outline">&#x2726; Summarize</button>
     </form>
     <a href="/day/{{ date_str }}/pool" class="btn btn-ghost">&#x25CE; View Pool</a>
     <form action="/day/{{ date_str }}/send" method="post" style="display:inline"
           onsubmit="return confirm('Send to all active subscribers?')">
+      {{ csrf_input(request) }}
       <button class="btn btn-primary">&#x2709; Send Newsletter</button>
     </form>
     {% endif %}
     {% else %}
     <form action="/day/{{ date_str }}/send" method="post" style="display:inline"
           onsubmit="return confirm('Send to all active subscribers?')">
+      {{ csrf_input(request) }}
       <button class="btn btn-primary">&#x2709; Send Newsletter</button>
     </form>
     {% endif %}
@@ -58,6 +62,7 @@
   <div class="form-card" style="margin-bottom:0;">
     <div class="section-label" style="margin-bottom:12px;">Add Article Manually</div>
     <form action="/day/{{ date_str }}/article/add" method="post">
+      {{ csrf_input(request) }}
       <div class="form-row">
         <div class="form-group" style="flex:2">
           <label class="label">URL <span class="text-muted">(leave blank for editorial note)</span></label>
@@ -112,6 +117,7 @@
     <!-- Subject + save choice -->
     <div class="builder-section">
       <form action="/day/{{ date_str }}/set-template" method="post">
+        {{ csrf_input(request) }}
         <input type="hidden" name="template_id" id="tmpl-form-id" value="{{ active_template_id or '' }}">
         <div class="form-group">
           <label class="label">Subject line</label>
@@ -204,6 +210,7 @@
     <iframe id="email-preview"
             src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}"
             class="preview-frame"
+            sandbox="allow-same-origin"
             frameborder="0"
             title="Email preview"></iframe>
   </div>
@@ -211,6 +218,7 @@
 </div>
 
 <script>
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
 const dateStr = '{{ date_str }}';
 let currentTemplateId = {{ active_template_id or 'null' }};
 let currentTemplateData = {};
@@ -290,6 +298,7 @@ function saveAsNew() {
 }
 
 function appendFields(form, fields) {
+  fields.csrf_token = CSRF_TOKEN;
   for (const [k, v] of Object.entries(fields)) {
     const i = document.createElement('input');
     i.type = 'hidden'; i.name = k; i.value = v;
@@ -312,6 +321,7 @@ function appendFields(form, fields) {
   <div class="empty-icon">&#x25CE;</div>
   <p>No articles yet for {{ date_str }}.</p>
   <form action="/day/{{ date_str }}/fetch" method="post">
+    {{ csrf_input(request) }}
     <button class="btn btn-primary">Fetch from Hacker News</button>
   </form>
   {% endif %}
@@ -324,6 +334,7 @@ function appendFields(form, fields) {
 <div class="reorder-hint">Drag articles to reorder &#x2195;</div>
 
 <form id="reorder-form" action="/day/{{ date_str }}/reorder" method="post">
+  {{ csrf_input(request) }}
   <div id="article-list" class="article-list">
     {% for a in articles %}
     <input type="hidden" name="order" value="{{ a.id }}" class="order-input" data-id="{{ a.id }}">
@@ -365,6 +376,7 @@ function appendFields(form, fields) {
 
           <div class="summary-edit" id="edit-{{ a.id }}" style="display:none">
             <form action="/day/{{ date_str }}/article/{{ a.id }}/summary" method="post">
+              {{ csrf_input(request) }}
               <textarea name="summary" class="textarea" rows="4">{{ a.summary or '' }}</textarea>
               <div class="btn-group" style="margin-top:8px">
                 <button type="submit" class="btn btn-sm btn-primary">Save</button>
@@ -380,6 +392,7 @@ function appendFields(form, fields) {
           <button type="button" class="btn btn-sm btn-ghost" id="regen-btn-{{ a.id }}"
                   onclick="triggerRegenerate({{ a.id }})">&#x21BA; Regenerate</button>
           <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
+            {{ csrf_input(request) }}
             <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
               {% if a.included %}&#x2715; Exclude{% else %}+ Include{% endif %}
             </button>
@@ -394,6 +407,7 @@ function appendFields(form, fields) {
 {% endif %}
 
 <script>
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
 const dateStr = '{{ date_str }}';
 
 function toggleAddArticle() {
@@ -428,7 +442,7 @@ function triggerRegenerate(id) {
   spinner.style.display = 'flex';
   if (btn) btn.disabled = true;
 
-  fetch('/day/' + dateStr + '/article/' + id + '/regenerate', {method: 'POST'})
+  fetch('/day/' + dateStr + '/article/' + id + '/regenerate', {method: 'POST', headers: {'X-CSRF-Token': CSRF_TOKEN}})
     .then(() => {
       let attempts = 0;
       const timer = setInterval(() => {

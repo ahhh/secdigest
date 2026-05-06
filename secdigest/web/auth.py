@@ -30,3 +30,12 @@ def ensure_default_password():
         print("  DEFAULT PASSWORD: secdigest")
         print("  Change it immediately at /settings")
         print("!" * 60 + "\n")
+
+
+def is_default_password() -> bool:
+    """True if the stored password hash matches the default 'secdigest' password."""
+    from secdigest import db
+    ph = db.cfg_get("password_hash")
+    if not ph:
+        return False
+    return verify_password("secdigest", ph)

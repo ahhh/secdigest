@@ -446,6 +446,10 @@ def newsletter_get(date_str: str) -> dict | None:
 def newsletter_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"status", "sent_at"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"newsletter_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE newsletters SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -497,6 +501,10 @@ def article_list(newsletter_id: int) -> list[dict]:
 def article_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"summary", "included", "title", "url", "relevance_score", "relevance_reason", "position"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"article_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE articles SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -578,6 +586,10 @@ def prompt_create(name: str, type_: str, content: str) -> dict:
 def prompt_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"name", "content", "active"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"prompt_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE prompts SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -612,6 +624,10 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
 def subscriber_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"active", "name"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"subscriber_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -697,6 +713,10 @@ def email_template_create(name: str, description: str, subject: str, html: str, 
 def email_template_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"name", "description", "subject", "html", "article_html"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"email_template_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE email_templates SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -772,6 +792,10 @@ def rss_feed_create(url: str, name: str, max_articles: int = 5) -> dict | None:
 def rss_feed_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"active", "name", "max_articles", "url"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"rss_feed_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE rss_feeds SET {fields} WHERE id=?", [*kwargs.values(), id])

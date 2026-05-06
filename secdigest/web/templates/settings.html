@@ -9,7 +9,7 @@
 {% for err in errors %}
 <div class="notice notice-error" role="alert">
   <button class="notice-close" aria-label="Dismiss"
-          onclick="fetch('/settings/clear-curation-error',{method:'POST'}).finally(()=>this.closest('.notice').remove())">✕</button>
+          onclick="fetch('/settings/clear-curation-error',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).finally(()=>this.closest('.notice').remove())">✕</button>
   <div class="notice-headline">{{ err.headline }}</div>
   <div class="notice-detail">{{ err.detail }}</div>
   <div class="notice-raw">{{ err.raw }}</div>
@@ -17,6 +17,7 @@
 {% endfor %}
 
 <form action="/settings" method="post">
+{{ csrf_input(request) }}
 <div class="settings-grid">
 
   <div class="settings-section">
@@ -138,6 +139,7 @@
 </table>
 
 <script>
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
 function testSmtp() {
   const btn = event.target;
   const out = document.getElementById('smtp-test-result');
@@ -145,7 +147,7 @@ function testSmtp() {
   btn.textContent = 'Testing…';
   out.style.display = 'none';
 
-  fetch('/settings/test-smtp', {method: 'POST'})
+  fetch('/settings/test-smtp', {method: 'POST', headers: {'X-CSRF-Token': CSRF_TOKEN}})
     .then(r => r.json())
     .then(data => {
       const rows = data.steps.map(s =>

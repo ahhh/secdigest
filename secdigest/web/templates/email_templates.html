@@ -10,6 +10,7 @@
 <div id="new-form" style="display:none" class="form-card" style="margin-bottom:24px;">
   <div class="section-label">New Template</div>
   <form action="/email-templates/new" method="post">
+    {{ csrf_input(request) }}
     <div class="form-row">
       <div class="form-group" style="flex:1">
         <label class="label">Name</label>
@@ -49,6 +50,7 @@
       {% if not tmpl.is_builtin %}
       <form action="/email-templates/{{ tmpl.id }}/delete" method="post" style="display:inline"
             onsubmit="return confirm('Delete this template?')">
+        {{ csrf_input(request) }}
         <button class="btn btn-sm btn-ghost btn-danger">&#x2715; Delete</button>
       </form>
       {% endif %}
@@ -59,6 +61,7 @@
 
   <div id="edit-{{ tmpl.id }}" style="display:none;margin-top:12px;">
     <form action="/email-templates/{{ tmpl.id }}/save" method="post">
+      {{ csrf_input(request) }}
       <div class="form-row">
         <div class="form-group" style="flex:1">
           <label class="label">Name</label>

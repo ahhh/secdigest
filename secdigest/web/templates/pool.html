@@ -15,6 +15,7 @@
   </div>
   <div class="btn-group">
     <form action="/day/{{ date_str }}/auto-select" method="post" style="display:inline">
+      {{ csrf_input(request) }}
       <button class="btn btn-primary">&#x25B2; Auto-select Top {{ max_curator }}</button>
     </form>
     <a href="/day/{{ date_str }}" class="btn btn-ghost">&#x2190; Curator</a>
@@ -61,6 +62,7 @@
 
       <div class="article-actions" style="margin-top:8px;">
         <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
+          {{ csrf_input(request) }}
           <button type="submit" class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
             {% if a.included %}&#x2715; Move to Pool{% else %}+ Include{% endif %}
           </button>

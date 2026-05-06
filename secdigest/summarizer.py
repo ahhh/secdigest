@@ -3,6 +3,7 @@ import re
 import httpx
 import anthropic
 from secdigest import config, db
+from secdigest.web.security import is_safe_external_url
 
 MODEL = "claude-haiku-4-5-20251001"
 
@@ -26,10 +27,10 @@ _CONTENT_TAGS = re.compile(
 
 def _fetch_article_text(url: str, max_chars: int = 1500) -> str:
     """Fetch article text. Tries to start from the main content block; caps at max_chars."""
-    if not url or "news.ycombinator.com" in url:
+    if not url or "news.ycombinator.com" in url or not is_safe_external_url(url):
         return ""
     try:
-        with httpx.Client(follow_redirects=True, timeout=8,
+        with httpx.Client(follow_redirects=False, timeout=8,
                           headers={"User-Agent": "Mozilla/5.0 (compatible; SecDigest/1.0)"}) as client:
             resp = client.get(url)
         if resp.status_code != 200:

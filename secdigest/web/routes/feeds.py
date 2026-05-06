@@ -1,12 +1,13 @@
 """Routes: RSS feed management."""
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from secdigest import db
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
+from secdigest.web.csrf import verify_csrf
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 
 @router.get("/feeds", response_class=HTMLResponse)

@@ -20,6 +20,7 @@
     </div>
     <div class="btn-group">
       <form action="/prompts/{{ p.id }}/toggle" method="post" style="display:inline">
+        {{ csrf_input(request) }}
         <button class="btn btn-sm btn-ghost">
           {{ '⏸ Disable' if p.active else '▶ Enable' }}
         </button>
@@ -27,6 +28,7 @@
       <button class="btn btn-sm btn-ghost" onclick="togglePromptEdit({{ p.id }})">✎ Edit</button>
       <form action="/prompts/{{ p.id }}/delete" method="post" style="display:inline"
             onsubmit="return confirm('Delete this prompt?')">
+        {{ csrf_input(request) }}
         <button class="btn btn-sm btn-ghost btn-danger">✕</button>
       </form>
     </div>
@@ -38,6 +40,7 @@
 
   <div class="prompt-edit-form" id="prompt-edit-{{ p.id }}" style="display:none">
     <form action="/prompts/{{ p.id }}/update" method="post">
+      {{ csrf_input(request) }}
       <input type="text" name="name" value="{{ p.name }}" class="input" style="margin-bottom:8px">
       <textarea name="content" class="textarea" rows="6">{{ p.content }}</textarea>
       <div class="btn-group" style="margin-top:8px">
@@ -55,6 +58,7 @@
 
 <div class="form-card">
   <form action="/prompts" method="post">
+    {{ csrf_input(request) }}
     <div class="form-row">
       <div class="form-group" style="flex:1">
         <label class="label">Name</label>
