@@ -371,18 +371,6 @@ function appendFields(form, fields) {
           {% if a.relevance_reason %}
           <span class="relevance-reason" title="{{ a.relevance_reason }}">&#x24D8;</span>
           {% endif %}
-          <form action="/day/{{ date_str }}/article/{{ a.id }}/pin/weekly" method="post"
-                style="display:inline;margin-left:6px;">
-            {{ csrf_input(request) }}
-            <button type="submit" class="pin-chip {% if a.pin_weekly %}pin-on{% endif %}"
-                    title="{% if a.pin_weekly %}Pinned to weekly digest — click to unpin{% else %}Pin to weekly digest{% endif %}">W</button>
-          </form>
-          <form action="/day/{{ date_str }}/article/{{ a.id }}/pin/monthly" method="post"
-                style="display:inline;">
-            {{ csrf_input(request) }}
-            <button type="submit" class="pin-chip {% if a.pin_monthly %}pin-on{% endif %}"
-                    title="{% if a.pin_monthly %}Pinned to monthly digest — click to unpin{% else %}Pin to monthly digest{% endif %}">M</button>
-          </form>
         </div>
 
         {% if a.url or a.hn_url %}
@@ -425,6 +413,20 @@ function appendFields(form, fields) {
             {{ csrf_input(request) }}
             <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
               {% if a.included %}&#x2715; Exclude{% else %}+ Include{% endif %}
+            </button>
+          </form>
+          <form action="/day/{{ date_str }}/article/{{ a.id }}/pin/weekly" method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm {% if a.pin_weekly %}btn-primary{% else %}btn-ghost{% endif %}"
+                    title="{% if a.pin_weekly %}Pinned to weekly digest — click to unpin{% else %}Pin this article to the weekly digest{% endif %}">
+              {% if a.pin_weekly %}&#x2713; Weekly{% else %}&#x29C9; Pin weekly{% endif %}
+            </button>
+          </form>
+          <form action="/day/{{ date_str }}/article/{{ a.id }}/pin/monthly" method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm {% if a.pin_monthly %}btn-primary{% else %}btn-ghost{% endif %}"
+                    title="{% if a.pin_monthly %}Pinned to monthly digest — click to unpin{% else %}Pin this article to the monthly digest{% endif %}">
+              {% if a.pin_monthly %}&#x2713; Monthly{% else %}&#x29C9; Pin monthly{% endif %}
             </button>
           </form>
         </div>
