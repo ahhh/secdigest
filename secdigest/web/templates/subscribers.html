@@ -30,7 +30,18 @@
   <p>No subscribers yet.</p>
 </div>
 {% else %}
-<table class="table">
+<div class="form-card" style="max-width:480px;margin-top:16px;">
+  <div class="form-group" style="margin:0;">
+    <input type="search" id="sub-filter" class="input"
+           placeholder="Filter — try foo, *@example.com, jo?n*"
+           autocomplete="off" spellcheck="false">
+  </div>
+  <p class="text-muted" id="sub-filter-status" style="font-size:.75em;margin-top:8px;line-height:1.4;">
+    <span id="sub-filter-count">{{ subscribers | length }}</span> shown
+    · <code>*</code> matches anything, <code>?</code> matches one character
+  </p>
+</div>
+<table class="table" id="sub-table">
   <thead>
     <tr>
       <th>Email</th>
@@ -42,7 +53,8 @@
   </thead>
   <tbody>
     {% for s in subscribers %}
-    <tr class="{% if not s.active %}row-muted{% endif %}">
+    <tr class="{% if not s.active %}row-muted{% endif %}"
+        data-search="{{ (s.email ~ ' ' ~ (s.name or '')) | lower }}">
       <td class="mono">{{ s.email }}</td>
       <td>{{ s.name or '—' }}</td>
       <td>
@@ -69,7 +81,48 @@
     </tr>
     {% endfor %}
   </tbody>
+  <tfoot>
+    <tr id="sub-empty-row" hidden>
+      <td colspan="5" class="text-muted" style="text-align:center;padding:18px;">
+        No subscribers match this filter.
+      </td>
+    </tr>
+  </tfoot>
 </table>
+
+<script>
+(function () {
+  const input = document.getElementById('sub-filter');
+  const rows = document.querySelectorAll('#sub-table tbody tr');
+  const countEl = document.getElementById('sub-filter-count');
+  const emptyRow = document.getElementById('sub-empty-row');
+  if (!input || !rows.length) return;
+
+  function buildRegex(q) {
+    if (!q) return null;
+    const escaped = q.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                     .replace(/\*/g, '.*')
+                     .replace(/\?/g, '.');
+    return new RegExp(escaped, 'i');
+  }
+
+  function apply() {
+    const q = input.value.trim();
+    const re = buildRegex(q);
+    let visible = 0;
+    rows.forEach(r => {
+      const hay = r.dataset.search || '';
+      const show = !re || re.test(hay);
+      r.hidden = !show;
+      if (show) visible++;
+    });
+    countEl.textContent = visible;
+    emptyRow.hidden = visible !== 0;
+  }
+
+  input.addEventListener('input', apply);
+})();
+</script>
 {% endif %}
 
 {% endblock %}
