@@ -224,6 +224,96 @@ _TMPL_GRID_ARTICLE = """\
 </table>
 </td>"""
 
+# ── Mobile-optimised templates (Gmail iOS) ────────────────────────────────────
+# Notes on the mobile templates below:
+#   - All styles inlined; Gmail iOS strips <style> reliably for non-Google addrs
+#   - <meta name="format-detection"> stops iOS auto-linking dates/numbers
+#   - <meta name="x-apple-disable-message-reformatting"> stops iOS Mail rescaling
+#   - <meta name="color-scheme"> opts the message into a fixed scheme so Gmail's
+#     auto dark-mode invert does not recolour the dark template
+#   - Hidden preheader <div> controls the inbox preview snippet
+#   - Title links use display:block + ~12px vertical padding so tap targets clear
+#     iOS's 44px minimum
+#   - System font stack (-apple-system) renders SF on iOS, Segoe on Win mail clients
+
+_TMPL_MOBILE_DARK_HTML = """\
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>SecDigest — {date}</title>
+</head>
+<body style="margin:0;padding:0;background:#0d1117;-webkit-text-size-adjust:100%;" bgcolor="#0d1117">
+<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:#0d1117;">
+SecDigest daily &mdash; {date} &middot; top security stories, summarised.
+</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0d1117" style="background:#0d1117;">
+<tr><td align="center" style="padding:20px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;">
+<tr><td style="padding:6px 4px 18px;border-bottom:2px solid #39ff14;">
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:22px;font-weight:700;color:#39ff14;letter-spacing:-.5px;line-height:1.2;">SecDigest</div>
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:#6e7681;margin-top:6px;"><span style="color:#6e7681;">{date}</span></div>
+</td></tr>
+{articles}
+<tr><td style="padding:24px 4px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7681;border-top:1px solid #21262d;">
+You're receiving this because you subscribed to SecDigest.<br>
+<a href="{unsubscribe_url}" style="color:#58a6ff;text-decoration:underline;">Unsubscribe</a>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>"""
+
+_TMPL_MOBILE_DARK_ARTICLE = """\
+<tr><td style="padding:18px 4px;border-bottom:1px solid #21262d;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#6e7681;margin-bottom:4px;letter-spacing:.04em;">#{number} &middot; HN {hn_score} pts</div>
+<a href="{url}" style="display:block;color:#58a6ff;font-size:17px;font-weight:600;text-decoration:none;line-height:1.35;padding:10px 0;">{title}</a>
+<div style="color:#c9d1d9;font-size:15px;line-height:1.6;margin-top:4px;">{summary}</div>
+</td></tr>"""
+
+_TMPL_MOBILE_LIGHT_HTML = """\
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>SecDigest — {date}</title>
+</head>
+<body style="margin:0;padding:0;background:#f6f8fa;-webkit-text-size-adjust:100%;" bgcolor="#f6f8fa">
+<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:#f6f8fa;">
+SecDigest daily &mdash; {date} &middot; top security stories, summarised.
+</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f8fa" style="background:#f6f8fa;">
+<tr><td align="center" style="padding:20px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;">
+<tr><td style="padding:24px 20px 18px;border-bottom:3px solid #0969da;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="font-size:22px;font-weight:700;color:#0969da;letter-spacing:-.5px;line-height:1.2;">SecDigest</div>
+<div style="font-size:13px;color:#6e7781;margin-top:6px;">{date}</div>
+</td></tr>
+<tr><td style="padding:0 20px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+{articles}
+</table>
+</td></tr>
+<tr><td style="padding:18px 20px 22px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7781;border-top:1px solid #e1e4e8;background:#fafbfc;" bgcolor="#fafbfc">
+You're receiving this because you subscribed to SecDigest.<br>
+<a href="{unsubscribe_url}" style="color:#0969da;text-decoration:underline;">Unsubscribe</a>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>"""
+
+_TMPL_MOBILE_LIGHT_ARTICLE = """\
+<tr><td style="padding:18px 0;border-bottom:1px solid #e1e4e8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="font-size:12px;color:#6e7781;margin-bottom:4px;letter-spacing:.02em;">#{number} &middot; HN {hn_score} pts</div>
+<a href="{url}" style="display:block;color:#0969da;font-size:17px;font-weight:600;text-decoration:none;line-height:1.35;padding:10px 0;">{title}</a>
+<div style="color:#1f2328;font-size:15px;line-height:1.6;margin-top:4px;">{summary}</div>
+</td></tr>"""
+
 DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Dark Terminal",
@@ -257,6 +347,22 @@ DEFAULT_EMAIL_TEMPLATES = [
         "article_html": _TMPL_GRID_ARTICLE,
         "is_builtin": 1,
     },
+    {
+        "name": "Mobile Dark",
+        "description": "Mobile-first dark layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_MOBILE_DARK_HTML,
+        "article_html": _TMPL_MOBILE_DARK_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "Mobile Light",
+        "description": "Mobile-first light layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_MOBILE_LIGHT_HTML,
+        "article_html": _TMPL_MOBILE_LIGHT_ARTICLE,
+        "is_builtin": 1,
+    },
 ]
 
 
@@ -282,6 +388,7 @@ def init_db():
         _migrate_summary_prompt(conn)
         _migrate_builtin_remove_hn_links(conn)
         _migrate_add_grid_template(conn)
+        _migrate_add_mobile_templates(conn)
 
 
 def _seed_config(conn):
@@ -373,6 +480,32 @@ def _migrate_add_grid_template(conn):
              "SecDigest — {date}",
              _TMPL_GRID_HTML, _TMPL_GRID_ARTICLE, 1),
         )
+        conn.commit()
+
+
+def _migrate_add_mobile_templates(conn):
+    """Insert the Mobile Dark and Mobile Light templates if they don't exist yet."""
+    specs = [
+        ("Mobile Dark",
+         "Mobile-first dark layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+         _TMPL_MOBILE_DARK_HTML, _TMPL_MOBILE_DARK_ARTICLE),
+        ("Mobile Light",
+         "Mobile-first light layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+         _TMPL_MOBILE_LIGHT_HTML, _TMPL_MOBILE_LIGHT_ARTICLE),
+    ]
+    changed = False
+    for name, desc, body, article in specs:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM email_templates WHERE name=?", (name,)
+        ).fetchone()[0]
+        if not existing:
+            conn.execute(
+                "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
+                "VALUES (?,?,?,?,?,1)",
+                (name, desc, "SecDigest — {date}", body, article),
+            )
+            changed = True
+    if changed:
         conn.commit()
 
 
