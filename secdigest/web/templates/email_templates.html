@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — Email Templates{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Email Templates</h1>
+  <button class="btn btn-outline" onclick="toggleNewForm()">+ New Template</button>
+</div>
+
+<div id="new-form" style="display:none" class="form-card" style="margin-bottom:24px;">
+  <div class="section-label">New Template</div>
+  <form action="/email-templates/new" method="post">
+    {{ csrf_input(request) }}
+    <div class="form-row">
+      <div class="form-group" style="flex:1">
+        <label class="label">Name</label>
+        <input type="text" name="name" class="input" required placeholder="My Template">
+      </div>
+      <div class="form-group" style="flex:2">
+        <label class="label">Description</label>
+        <input type="text" name="description" class="input" placeholder="Optional description">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="label">Subject line <span class="text-muted">(use {date} for the newsletter date)</span></label>
+      <input type="text" name="subject" class="input" value="SecDigest — {date}">
+    </div>
+    <div class="form-group">
+      <label class="label">Wrapper HTML <span class="text-muted">(use {articles} and {date} as placeholders)</span></label>
+      <textarea name="html" class="textarea" rows="10" required placeholder="<!DOCTYPE html>...{articles}..."></textarea>
+    </div>
+    <div class="form-group">
+      <label class="label">Article HTML <span class="text-muted">(use {number} {title} {url} {hn_url} {summary} {hn_score} {hn_comments})</span></label>
+      <textarea name="article_html" class="textarea" rows="6" required placeholder="<tr><td>...{title}...</td></tr>"></textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">Create Template</button>
+  </form>
+</div>
+
+{% for tmpl in email_templates %}
+<div class="form-card" style="margin-bottom:16px;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+    <div>
+      <span class="prompt-name">{{ tmpl.name }}</span>
+      {% if tmpl.is_builtin %}<span class="badge badge-gray">built-in</span>{% endif %}
+      {% if tmpl.description %}<span class="text-muted" style="font-size:.85em;margin-left:8px;">{{ tmpl.description }}</span>{% endif %}
+    </div>
+    <div class="btn-group">
+      <button class="btn btn-sm btn-ghost" onclick="toggleEdit({{ tmpl.id }})">&#x270E; Edit</button>
+      {% if not tmpl.is_builtin %}
+      <form action="/email-templates/{{ tmpl.id }}/delete" method="post" style="display:inline"
+            onsubmit="return confirm('Delete this template?')">
+        {{ csrf_input(request) }}
+        <button class="btn btn-sm btn-ghost btn-danger">&#x2715; Delete</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="prompt-text" style="margin-bottom:8px;">Subject: {{ tmpl.subject }}</div>
+
+  <div id="edit-{{ tmpl.id }}" style="display:none;margin-top:12px;">
+    <form action="/email-templates/{{ tmpl.id }}/save" method="post">
+      {{ csrf_input(request) }}
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label class="label">Name</label>
+          <input type="text" name="name" class="input" value="{{ tmpl.name }}" required>
+        </div>
+        <div class="form-group" style="flex:2">
+          <label class="label">Description</label>
+          <input type="text" name="description" class="input" value="{{ tmpl.description }}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="label">Subject</label>
+        <input type="text" name="subject" class="input" value="{{ tmpl.subject }}">
+      </div>
+      <div class="form-group">
+        <label class="label">Wrapper HTML</label>
+        <textarea name="html" class="textarea" rows="12">{{ tmpl.html }}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="label">Article HTML</label>
+        <textarea name="article_html" class="textarea" rows="8">{{ tmpl.article_html }}</textarea>
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="toggleEdit({{ tmpl.id }})">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% else %}
+<p class="text-muted">No templates yet.</p>
+{% endfor %}
+
+<script>
+function toggleNewForm() {
+  const f = document.getElementById('new-form');
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+function toggleEdit(id) {
+  const el = document.getElementById('edit-' + id);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+</script>
+{% endblock %}

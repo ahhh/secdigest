@@ -11,6 +11,7 @@
 <div class="form-card" style="max-width:480px">
   <div class="section-label">Add Subscriber</div>
   <form action="/subscribers" method="post">
+    {{ csrf_input(request) }}
     <div class="form-row">
       <div class="form-group" style="flex:1">
         <input type="email" name="email" class="input" placeholder="email@example.com" required>
@@ -53,12 +54,14 @@
       <td>
         <div class="btn-group">
           <form action="/subscribers/{{ s.id }}/toggle" method="post" style="display:inline">
+            {{ csrf_input(request) }}
             <button class="btn btn-sm btn-ghost">
               {{ 'Pause' if s.active else 'Resume' }}
             </button>
           </form>
           <form action="/subscribers/{{ s.id }}/delete" method="post" style="display:inline"
                 onsubmit="return confirm('Remove {{ s.email }}?')">
+            {{ csrf_input(request) }}
             <button class="btn btn-sm btn-ghost btn-danger">✕</button>
           </form>
         </div>

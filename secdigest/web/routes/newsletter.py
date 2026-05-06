@@ -2,14 +2,15 @@
 import asyncio
 from datetime import date as dt_date
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from secdigest import db, fetcher, summarizer, mailer
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
+from secdigest.web.csrf import verify_csrf
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 
 def _today() -> str:
@@ -51,12 +52,30 @@ async def day_view(request: Request, date_str: str):
         return redirect_login()
     newsletter = db.newsletter_get(date_str)
     articles = db.article_list(newsletter["id"]) if newsletter else []
+    view = request.query_params.get("view", "curator")
+    email_templates = db.email_template_list()
+    active_template_id = (
+        db.newsletter_get_template_id(newsletter["id"]) if newsletter else None
+    ) or (email_templates[0]["id"] if email_templates else None)
+    active_subject = (
+        db.newsletter_get_subject(newsletter["id"]) if newsletter else None
+    )
+    if not active_subject and email_templates:
+        tmpl = next((t for t in email_templates if t["id"] == active_template_id), email_templates[0] if email_templates else None)
+        active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"SecDigest — {date_str}"
+    active_toc = db.newsletter_get_toc(newsletter["id"]) if newsletter else False
     return templates.TemplateResponse("day.html", {
         "request": request,
         "date_str": date_str,
         "newsletter": newsletter,
         "articles": articles,
         "is_today": date_str == _today(),
+        "fetching": request.query_params.get("fetching") == "1",
+        "view": view,
+        "email_templates": email_templates,
+        "active_template_id": active_template_id,
+        "active_subject": active_subject,
+        "active_toc": active_toc,
     })
 
 
@@ -66,8 +85,54 @@ async def day_view(request: Request, date_str: str):
 async def day_fetch(request: Request, date_str: str):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
+    newsletter = db.newsletter_get(date_str)
+    if newsletter and db.article_count(newsletter["id"]) > 0:
+        return RedirectResponse(f"/day/{date_str}?msg=Articles+already+fetched", status_code=302)
     asyncio.create_task(fetcher.run_fetch(date_str))
-    return RedirectResponse(f"/day/{date_str}?msg=Fetching+articles...", status_code=302)
+    return RedirectResponse(f"/day/{date_str}?fetching=1", status_code=302)
+
+
+@router.get("/day/{date_str}/preview", response_class=HTMLResponse)
+async def day_preview(request: Request, date_str: str, template_id: int = 0, include_toc: int = 0):
+    if not is_authed(request):
+        return HTMLResponse("", status_code=401)
+    _preview_headers = {
+        "Content-Security-Policy": "sandbox; default-src 'none'; img-src https: data:; style-src 'unsafe-inline'",
+        "X-Frame-Options": "SAMEORIGIN",
+    }
+    newsletter = db.newsletter_get(date_str)
+    _placeholder = lambda msg: HTMLResponse(
+        f'<!DOCTYPE html><html><body style="margin:0;padding:40px;background:#0d1117;'
+        f'color:#6e7681;font-family:monospace;text-align:center;"><p>{msg}</p></body></html>',
+        headers=_preview_headers,
+    )
+    if not newsletter:
+        return _placeholder("No newsletter for this date.")
+    articles = db.article_list(newsletter["id"])
+    if not any(a.get("included", 1) for a in articles):
+        return _placeholder("No included articles yet — add them in the Curator tab.")
+    tid = template_id or None
+    return HTMLResponse(
+        mailer.render_email_html(newsletter, articles, tid, include_toc=bool(include_toc)),
+        headers=_preview_headers,
+    )
+
+
+@router.post("/day/{date_str}/set-template")
+async def set_template(request: Request, date_str: str):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    form = await request.form()
+    template_id = int(form.get("template_id", 0))
+    subject = form.get("subject", "").strip()
+    include_toc = form.get("include_toc") == "1"
+    newsletter = db.newsletter_get_or_create(date_str)
+    if template_id:
+        db.newsletter_set_template_id(newsletter["id"], template_id)
+    if subject:
+        db.newsletter_set_subject(newsletter["id"], subject)
+    db.newsletter_set_toc(newsletter["id"], include_toc)
+    return RedirectResponse(f"/day/{date_str}?view=builder", status_code=302)
 
 
 @router.post("/day/{date_str}/summarize")
@@ -92,7 +157,73 @@ async def day_send(request: Request, date_str: str):
     )
 
 
+@router.get("/day/{date_str}/pool", response_class=HTMLResponse)
+async def day_pool(request: Request, date_str: str):
+    if not is_authed(request):
+        return redirect_login()
+    newsletter = db.newsletter_get(date_str)
+    articles = db.article_list(newsletter["id"]) if newsletter else []
+    articles = sorted(articles, key=lambda a: a.get("relevance_score", 0), reverse=True)
+    included_count = sum(1 for a in articles if a.get("included", 1))
+    max_curator = int(db.cfg_get("max_curator_articles") or 10)
+    return templates.TemplateResponse("pool.html", {
+        "request": request,
+        "date_str": date_str,
+        "newsletter": newsletter,
+        "articles": articles,
+        "included_count": included_count,
+        "max_curator": max_curator,
+    })
+
+
+@router.post("/day/{date_str}/auto-select")
+async def auto_select(request: Request, date_str: str):
+    if not is_authed(request):
+        return RedirectResponse(f"/day/{date_str}/pool", status_code=302)
+    newsletter = db.newsletter_get(date_str)
+    max_curator = int(db.cfg_get("max_curator_articles") or 10)
+    if newsletter:
+        db.article_auto_select(newsletter["id"], max_curator)
+    return RedirectResponse(
+        f"/day/{date_str}/pool?msg=Top+{max_curator}+articles+selected", status_code=302
+    )
+
+
 # ── Article actions ───────────────────────────────────────────────────────────
+
+@router.post("/day/{date_str}/article/add")
+async def add_article(request: Request, date_str: str,
+                      url: str = Form(""),
+                      title: str = Form(...),
+                      summary: str = Form(""),
+                      auto_summarize: str = Form("0")):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    if not url.strip() and not summary.strip():
+        return RedirectResponse(
+            f"/day/{date_str}?msg=URL+or+summary+required&status=error", status_code=302
+        )
+    newsletter = db.newsletter_get_or_create(date_str)
+    articles = db.article_list(newsletter["id"])
+    position = max((a["position"] for a in articles), default=-1) + 1
+    reason = "manually added" if url.strip() else "editorial note"
+    article_id = db.article_insert(
+        newsletter_id=newsletter["id"],
+        hn_id=None,
+        title=title.strip(),
+        url=url.strip(),
+        hn_score=0,
+        hn_comments=0,
+        relevance_score=10.0,
+        relevance_reason=reason,
+        position=position,
+    )
+    if summary.strip():
+        db.article_update(article_id, summary=summary.strip())
+    elif auto_summarize == "1":
+        asyncio.create_task(asyncio.to_thread(summarizer.summarize_article, article_id))
+    return RedirectResponse(f"/day/{date_str}", status_code=302)
+
 
 @router.post("/day/{date_str}/article/{article_id}/summary")
 async def update_summary(request: Request, date_str: str, article_id: int,
@@ -101,6 +232,16 @@ async def update_summary(request: Request, date_str: str, article_id: int,
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     db.article_update(article_id, summary=summary)
     return RedirectResponse(f"/day/{date_str}", status_code=302)
+
+
+@router.get("/day/{date_str}/article/{article_id}/json")
+async def article_json(request: Request, date_str: str, article_id: int):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    article = db.article_get(article_id)
+    if not article:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse({"id": article_id, "summary": article.get("summary")})
 
 
 @router.post("/day/{date_str}/article/{article_id}/regenerate")

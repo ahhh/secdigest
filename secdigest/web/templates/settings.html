@@ -6,7 +6,18 @@
   <h1 class="page-title">Settings</h1>
 </div>
 
+{% for err in errors %}
+<div class="notice notice-error" role="alert">
+  <button class="notice-close" aria-label="Dismiss"
+          onclick="fetch('/settings/clear-curation-error',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).finally(()=>this.closest('.notice').remove())">✕</button>
+  <div class="notice-headline">{{ err.headline }}</div>
+  <div class="notice-detail">{{ err.detail }}</div>
+  <div class="notice-raw">{{ err.raw }}</div>
+</div>
+{% endfor %}
+
 <form action="/settings" method="post">
+{{ csrf_input(request) }}
 <div class="settings-grid">
 
   <div class="settings-section">
@@ -24,6 +35,11 @@
     <div class="form-group">
       <label class="label">Max articles per newsletter</label>
       <input type="number" name="max_articles" value="{{ cfg.max_articles }}"
+             class="input input-sm" min="1" max="50">
+    </div>
+    <div class="form-group">
+      <label class="label">Max curator articles <span class="text-muted">(top N auto-included, rest in pool)</span></label>
+      <input type="number" name="max_curator_articles" value="{{ cfg.max_curator_articles }}"
              class="input input-sm" min="1" max="50">
     </div>
     <div class="form-group">
@@ -61,6 +77,24 @@
       <label class="label">From address</label>
       <input type="text" name="smtp_from" value="{{ cfg.smtp_from }}"
              class="input" placeholder="SecDigest &lt;you@example.com&gt;">
+    </div>
+    <p class="text-muted" style="font-size:0.8em;line-height:1.6;margin-top:4px;">
+      <strong style="color:var(--text)">Gmail:</strong>
+      host <code>smtp.gmail.com</code> · port <code>587</code> (STARTTLS) or <code>465</code> (SSL) ·
+      use an <strong>App Password</strong> — regular passwords are rejected by Google.<br>
+      App Passwords are 16 characters. Paste them exactly as shown — spaces are fine.
+    </p>
+    <button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px"
+            onclick="testSmtp()">&#x25B6; Test Connection</button>
+    <div id="smtp-test-result" style="display:none;margin-top:10px;"></div>
+  </div>
+
+  <div class="settings-section">
+    <div class="section-label">Newsletter</div>
+    <div class="form-group">
+      <label class="label">Site base URL <span class="text-muted">(used for unsubscribe links)</span></label>
+      <input type="text" name="base_url" value="{{ cfg.base_url }}"
+             class="input" placeholder="http://localhost:8000">
     </div>
   </div>
 
@@ -103,5 +137,30 @@
     {% endfor %}
   </tbody>
 </table>
+
+<script>
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
+function testSmtp() {
+  const btn = event.target;
+  const out = document.getElementById('smtp-test-result');
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  out.style.display = 'none';
+
+  fetch('/settings/test-smtp', {method: 'POST', headers: {'X-CSRF-Token': CSRF_TOKEN}})
+    .then(r => r.json())
+    .then(data => {
+      const rows = data.steps.map(s =>
+        `<div style="display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:.82em;">
+          <span style="color:${s.ok ? 'var(--green)' : 'var(--red)'};font-family:monospace;min-width:76px">${s.ok ? '✓' : '✗'} ${s.label}</span>
+          <span class="text-muted">${s.msg}</span>
+        </div>`
+      ).join('');
+      out.innerHTML = `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:10px;">${rows}</div>`;
+      out.style.display = 'block';
+    })
+    .finally(() => { btn.disabled = false; btn.textContent = '▶ Test Connection'; });
+}
+</script>
 
 {% endblock %}

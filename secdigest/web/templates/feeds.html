@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — RSS Feeds{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">RSS Feeds</h1>
+</div>
+
+<!-- Add feed form -->
+<div class="form-card" style="margin-bottom:28px;">
+  <div class="section-label" style="margin-bottom:14px;">Add Feed</div>
+  <form action="/feeds/add" method="post">
+    {{ csrf_input(request) }}
+    <div class="form-row">
+      <div class="form-group" style="flex:3">
+        <label class="label">Feed URL <span class="text-muted">(RSS or Atom)</span></label>
+        <input type="url" name="url" class="input" required
+               placeholder="https://example.com/feed.xml">
+      </div>
+      <div class="form-group" style="flex:2">
+        <label class="label">Name <span class="text-muted">(optional)</span></label>
+        <input type="text" name="name" class="input" placeholder="Krebs on Security">
+      </div>
+      <div class="form-group" style="flex:0 0 120px">
+        <label class="label">Max articles</label>
+        <input type="number" name="max_articles" class="input" value="5" min="1" max="20">
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">+ Add Feed</button>
+  </form>
+</div>
+
+{% if feeds %}
+<table class="table">
+  <thead>
+    <tr>
+      <th>Name / URL</th>
+      <th>Max</th>
+      <th>Status</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for feed in feeds %}
+    <tr class="{% if not feed.active %}row-muted{% endif %}">
+      <td>
+        <div style="font-weight:600;color:var(--text)">{{ feed.name or '—' }}</div>
+        <div class="text-muted mono" style="font-size:0.8em;">{{ feed.url }}</div>
+      </td>
+      <td class="mono">{{ feed.max_articles }}</td>
+      <td>
+        <span class="badge badge-{{ 'green' if feed.active else 'gray' }}">
+          {{ 'active' if feed.active else 'paused' }}
+        </span>
+      </td>
+      <td>
+        <div class="btn-group">
+          <form action="/feeds/{{ feed.id }}/toggle" method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button type="submit" class="btn btn-sm btn-ghost">
+              {{ '⏸ Pause' if feed.active else '▶ Resume' }}
+            </button>
+          </form>
+          <form action="/feeds/{{ feed.id }}/delete" method="post" style="display:inline"
+                onsubmit="return confirm('Remove this feed?')">
+            {{ csrf_input(request) }}
+            <button type="submit" class="btn btn-sm btn-ghost btn-danger">✕ Remove</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <div class="empty-icon">&#x29C9;</div>
+  <p>No RSS feeds yet. Add one above to pull articles automatically.</p>
+</div>
+{% endif %}
+
+{% endblock %}

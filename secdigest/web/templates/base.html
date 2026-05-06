@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="{{ csrf_token_value(request) }}">
   <title>{% block title %}SecDigest{% endblock %}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js" defer></script>
@@ -15,9 +17,12 @@
       <a href="/" class="nav-link {% if request.url.path == '/' or '/day/' in request.url.path %}active{% endif %}">Today</a>
       <a href="/archive" class="nav-link {% if request.url.path == '/archive' %}active{% endif %}">Archive</a>
       <a href="/prompts" class="nav-link {% if request.url.path == '/prompts' %}active{% endif %}">Prompts</a>
+      <a href="/feeds" class="nav-link {% if '/feeds' in request.url.path %}active{% endif %}">Feeds</a>
       <a href="/subscribers" class="nav-link {% if request.url.path == '/subscribers' %}active{% endif %}">Subscribers</a>
+      <a href="/email-templates" class="nav-link {% if '/email-templates' in request.url.path %}active{% endif %}">Templates</a>
       <a href="/settings" class="nav-link {% if request.url.path == '/settings' %}active{% endif %}">Settings</a>
       <form action="/logout" method="post" style="display:inline">
+        {{ csrf_input(request) }}
         <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
     </div>

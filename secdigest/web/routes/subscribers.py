@@ -1,12 +1,17 @@
 """Routes: subscriber list management."""
-from fastapi import APIRouter, Form, Request
+import re
+
+from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from secdigest import db
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
+from secdigest.web.csrf import verify_csrf
 
-router = APIRouter()
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 
 @router.get("/subscribers", response_class=HTMLResponse)
@@ -23,7 +28,10 @@ async def subscribers_page(request: Request):
 async def add_subscriber(request: Request, email: str = Form(...), name: str = Form("")):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    result = db.subscriber_create(email.strip().lower(), name.strip())
+    email_clean = (email or "").strip().replace("\r", "").replace("\n", "")
+    if not _EMAIL_RE.match(email_clean):
+        return RedirectResponse("/subscribers?msg=Invalid+email+address&status=error", status_code=302)
+    result = db.subscriber_create(email_clean.lower(), name.strip())
     msg = "Added" if result else "Already+exists"
     return RedirectResponse(f"/subscribers?msg={msg}", status_code=302)
 

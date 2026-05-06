@@ -1,6 +1,7 @@
 """All SQLite operations. Single module — import this everywhere you need data access."""
 import sqlite3
 import threading
+import uuid
 from secdigest import config
 
 _conn: sqlite3.Connection | None = None
@@ -32,7 +33,17 @@ CREATE TABLE IF NOT EXISTS articles (
     summary         TEXT,
     position        INTEGER DEFAULT 0,
     included        INTEGER DEFAULT 1,
+    source          TEXT    DEFAULT 'hn',
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rss_feeds (
+    id           INTEGER PRIMARY KEY,
+    url          TEXT    UNIQUE NOT NULL,
+    name         TEXT    NOT NULL DEFAULT '',
+    active       INTEGER DEFAULT 1,
+    max_articles INTEGER DEFAULT 5,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS prompts (
@@ -45,11 +56,12 @@ CREATE TABLE IF NOT EXISTS prompts (
 );
 
 CREATE TABLE IF NOT EXISTS subscribers (
-    id          INTEGER PRIMARY KEY,
-    email       TEXT    UNIQUE NOT NULL,
-    name        TEXT    DEFAULT '',
-    active      INTEGER DEFAULT 1,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id                INTEGER PRIMARY KEY,
+    email             TEXT    UNIQUE NOT NULL,
+    name              TEXT    DEFAULT '',
+    active            INTEGER DEFAULT 1,
+    unsubscribe_token TEXT,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS llm_audit_log (
@@ -67,6 +79,17 @@ CREATE TABLE IF NOT EXISTS llm_audit_log (
 CREATE TABLE IF NOT EXISTS config_kv (
     key     TEXT PRIMARY KEY,
     value   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS email_templates (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT    NOT NULL,
+    description  TEXT    DEFAULT '',
+    subject      TEXT    NOT NULL DEFAULT 'SecDigest — {date}',
+    html         TEXT    NOT NULL,
+    article_html TEXT    NOT NULL,
+    is_builtin   INTEGER DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -90,10 +113,149 @@ DEFAULT_PROMPTS = [
         "type": "summary",
         "content": (
             "Write a concise 2-3 sentence summary for a security professional audience. "
-            "Focus on: what the vulnerability/tool/threat is, who or what it affects, "
-            "severity/impact, and any CVE IDs, affected versions, or mitigations if known. "
+            "Always produce a summary regardless of article type — never refuse. "
+            "For vulnerabilities: include CVE IDs, affected versions, severity, and mitigations. "
+            "For opinion or discussion pieces: capture the core argument and its security relevance. "
+            "For tools or research: describe what it does and why it matters. "
             "Be factual and direct. No fluff, no marketing language."
         ),
+    },
+]
+
+_TMPL_DARK_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;">
+<tr><td style="padding-bottom:24px;border-bottom:2px solid #39ff14;">
+<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#39ff14;">SecDigest</span>
+<span style="color:#6e7681;margin-left:12px;font-size:.9em;">{date}</span>
+</td></tr>
+{articles}
+<tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_DARK_ARTICLE = """\
+<tr><td style="padding:16px 0;border-bottom:1px solid #21262d;">
+<div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number} &nbsp;&middot;&nbsp; HN {hn_score} pts &nbsp;&middot;&nbsp; {hn_comments} comments</div>
+<a href="{url}" style="color:#58a6ff;font-size:1.05em;font-weight:600;text-decoration:none;">{title}</a>
+<p style="color:#c9d1d9;margin:8px 0 4px;font-size:.9em;line-height:1.5;">{summary}</p>
+</td></tr>"""
+
+_TMPL_LIGHT_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f6f8fa;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+<tr><td style="padding:28px 32px 20px;border-bottom:3px solid #0969da;">
+<span style="font-size:1.4em;font-weight:700;color:#0969da;letter-spacing:-0.5px;">SecDigest</span>
+<span style="color:#8c959f;margin-left:10px;font-size:.875em;">{date}</span>
+</td></tr>
+<tr><td style="padding:0 32px;">
+<table width="100%" cellpadding="0" cellspacing="0">{articles}</table>
+</td></tr>
+<tr><td style="padding:20px 32px 28px;font-size:.75em;color:#8c959f;border-top:1px solid #e1e4e8;">
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#8c959f;">Unsubscribe</a>
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_LIGHT_ARTICLE = """\
+<tr><td style="padding:20px 0;border-bottom:1px solid #e1e4e8;">
+<div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number} &middot; HN {hn_score} pts &middot; {hn_comments} comments</div>
+<a href="{url}" style="color:#0969da;font-size:1em;font-weight:600;text-decoration:none;line-height:1.4;">{title}</a>
+<p style="color:#24292f;margin:8px 0 6px;font-size:.875em;line-height:1.6;">{summary}</p>
+</td></tr>"""
+
+_TMPL_MINIMAL_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#ffffff;font-family:Georgia,'Times New Roman',serif;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:40px 20px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
+<tr><td style="padding-bottom:24px;border-bottom:1px solid #cccccc;">
+<strong style="font-size:1.2em;color:#111111;">SecDigest</strong>
+<span style="color:#888888;margin-left:10px;font-size:.9em;">{date}</span>
+</td></tr>
+{articles}
+<tr><td style="padding-top:32px;font-size:.75em;color:#aaaaaa;border-top:1px solid #eeeeee;">
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#aaaaaa;">Unsubscribe</a>
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_MINIMAL_ARTICLE = """\
+<tr><td style="padding:24px 0;border-bottom:1px solid #eeeeee;">
+<div style="font-size:.8em;color:#aaaaaa;margin-bottom:6px;">#{number}</div>
+<a href="{url}" style="color:#111111;font-size:1em;font-weight:bold;text-decoration:none;">{title}</a>
+<p style="color:#444444;margin:10px 0 8px;font-size:.875em;line-height:1.7;">{summary}</p>
+</td></tr>"""
+
+_TMPL_GRID_HTML = """\
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:700px;">
+<tr><td style="padding-bottom:20px;border-bottom:2px solid #39ff14;">
+<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#39ff14;">SecDigest</span>
+<span style="color:#6e7681;margin-left:12px;font-size:.9em;">{date}</span>
+</td></tr>
+<tr><td style="padding-top:14px;">
+<table width="100%" cellpadding="0" cellspacing="0">
+{articles_2col}
+</table>
+</td></tr>
+<tr><td style="padding-top:20px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
+You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+<a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
+</td></tr>
+</table></td></tr></table></body></html>"""
+
+_TMPL_GRID_ARTICLE = """\
+<td style="width:50%;vertical-align:top;padding:6px;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#161b22;border:1px solid #30363d;border-radius:6px;">
+<tr><td style="padding:14px;vertical-align:top;">
+<div style="font-size:.7em;color:#6e7681;font-family:monospace;margin-bottom:8px;">#{number}</div>
+<a href="{url}" style="color:#58a6ff;font-size:.9em;font-weight:600;text-decoration:none;display:block;line-height:1.4;margin-bottom:10px;">{title}</a>
+<p style="color:#c9d1d9;margin:0;font-size:.82em;line-height:1.55;">{summary}</p>
+</td></tr>
+</table>
+</td>"""
+
+DEFAULT_EMAIL_TEMPLATES = [
+    {
+        "name": "Dark Terminal",
+        "description": "Dark background with monospace font and green accent. Matches the SecDigest app aesthetic.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_DARK_HTML,
+        "article_html": _TMPL_DARK_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "Clean Light",
+        "description": "White background, blue header, professional sans-serif style.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_LIGHT_HTML,
+        "article_html": _TMPL_LIGHT_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "Minimal",
+        "description": "Plain white with serif font. No heavy styling — lets the content speak.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_MINIMAL_HTML,
+        "article_html": _TMPL_MINIMAL_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "2-Column Grid",
+        "description": "Dark theme with articles in a 2-column card grid. Best for shorter summaries.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_GRID_HTML,
+        "article_html": _TMPL_GRID_ARTICLE,
+        "is_builtin": 1,
     },
 ]
 
@@ -113,6 +275,13 @@ def init_db():
         conn.commit()
         _seed_config(conn)
         _seed_prompts(conn)
+        _seed_email_templates(conn)
+        _migrate_subscriber_tokens(conn)
+        _migrate_article_source(conn)
+        _migrate_builtin_template_unsubscribe(conn)
+        _migrate_summary_prompt(conn)
+        _migrate_builtin_remove_hn_links(conn)
+        _migrate_add_grid_template(conn)
 
 
 def _seed_config(conn):
@@ -127,6 +296,110 @@ def _seed_prompts(conn):
             conn.execute(
                 "INSERT INTO prompts(name, type, content) VALUES (?,?,?)",
                 (p["name"], p["type"], p["content"])
+            )
+        conn.commit()
+
+
+def _migrate_subscriber_tokens(conn):
+    """Add unsubscribe_token column to subscribers and backfill any NULLs."""
+    try:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN unsubscribe_token TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    rows = conn.execute("SELECT id FROM subscribers WHERE unsubscribe_token IS NULL").fetchall()
+    for row in rows:
+        conn.execute("UPDATE subscribers SET unsubscribe_token=? WHERE id=?",
+                     (str(uuid.uuid4()), row[0]))
+    if rows:
+        conn.commit()
+
+
+_OLD_SUMMARY_PROMPT = (
+    "Write a concise 2-3 sentence summary for a security professional audience. "
+    "Focus on: what the vulnerability/tool/threat is, who or what it affects, "
+    "severity/impact, and any CVE IDs, affected versions, or mitigations if known. "
+    "Be factual and direct. No fluff, no marketing language."
+)
+_NEW_SUMMARY_PROMPT = DEFAULT_PROMPTS[1]["content"]
+
+
+def _migrate_summary_prompt(conn):
+    """Update the default summary prompt if it hasn't been customised."""
+    row = conn.execute(
+        "SELECT id, content FROM prompts WHERE type='summary' AND name='Technical Summary Style'"
+    ).fetchone()
+    if row and row[1].strip() == _OLD_SUMMARY_PROMPT.strip():
+        conn.execute("UPDATE prompts SET content=? WHERE id=?", (_NEW_SUMMARY_PROMPT, row[0]))
+        conn.commit()
+
+
+def _migrate_article_source(conn):
+    try:
+        conn.execute("ALTER TABLE articles ADD COLUMN source TEXT DEFAULT 'hn'")
+        conn.commit()
+    except Exception:
+        pass
+    conn.execute("UPDATE articles SET source='manual' WHERE hn_id IS NULL AND source='hn'")
+    conn.commit()
+
+
+def _migrate_builtin_remove_hn_links(conn):
+    """Strip <a href="{hn_url}"> discussion links from existing built-in article templates."""
+    import re
+    rows = conn.execute(
+        "SELECT id, article_html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    changed = False
+    for row in rows:
+        if "{hn_url}" in row[1]:
+            new_html = re.sub(r'\s*<a href="\{hn_url\}"[^>]*>[^<]*</a>', "", row[1])
+            conn.execute("UPDATE email_templates SET article_html=? WHERE id=?", (new_html, row[0]))
+            changed = True
+    if changed:
+        conn.commit()
+
+
+def _migrate_add_grid_template(conn):
+    """Insert the 2-Column Grid template if it doesn't exist yet."""
+    if conn.execute(
+        "SELECT COUNT(*) FROM email_templates WHERE name='2-Column Grid'"
+    ).fetchone()[0] == 0:
+        conn.execute(
+            "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
+            "VALUES (?,?,?,?,?,?)",
+            ("2-Column Grid",
+             "Dark theme with articles in a 2-column card grid. Best for shorter summaries.",
+             "SecDigest — {date}",
+             _TMPL_GRID_HTML, _TMPL_GRID_ARTICLE, 1),
+        )
+        conn.commit()
+
+
+def _migrate_builtin_template_unsubscribe(conn):
+    """Add {unsubscribe_url} footer link to built-in templates that don't have it yet."""
+    rows = conn.execute(
+        "SELECT id, html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    for row in rows:
+        if "{unsubscribe_url}" not in row[1]:
+            new_html = row[1].replace(
+                "You're receiving this because you subscribed to SecDigest.",
+                "You're receiving this because you subscribed to SecDigest."
+                " &nbsp;&middot;&nbsp; "
+                '<a href="{unsubscribe_url}" style="color:inherit;opacity:0.7;">Unsubscribe</a>',
+            )
+            conn.execute("UPDATE email_templates SET html=? WHERE id=?", (new_html, row[0]))
+    conn.commit()
+
+
+def _seed_email_templates(conn):
+    if conn.execute("SELECT COUNT(*) FROM email_templates").fetchone()[0] == 0:
+        for t in DEFAULT_EMAIL_TEMPLATES:
+            conn.execute(
+                "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
+                "VALUES (?,?,?,?,?,?)",
+                (t["name"], t["description"], t["subject"], t["html"], t["article_html"], t["is_builtin"])
             )
         conn.commit()
 
@@ -173,6 +446,10 @@ def newsletter_get(date_str: str) -> dict | None:
 def newsletter_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"status", "sent_at"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"newsletter_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE newsletters SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -193,18 +470,21 @@ def article_get(id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def article_insert(newsletter_id: int, hn_id: int, title: str, url: str,
+def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
                    hn_score: int, hn_comments: int, relevance_score: float,
-                   relevance_reason: str, position: int) -> int:
+                   relevance_reason: str, position: int,
+                   included: int = 1, source: str = 'hn') -> int:
+    hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else None
     with _lock:
         cur = _get_conn().execute(
             """INSERT OR IGNORE INTO articles
                (newsletter_id, hn_id, title, url, hn_url, hn_score, hn_comments,
-                relevance_score, relevance_reason, position)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                relevance_score, relevance_reason, position, included, source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (newsletter_id, hn_id, title, url,
-             f"https://news.ycombinator.com/item?id={hn_id}",
-             hn_score, hn_comments, relevance_score, relevance_reason, position),
+             hn_url,
+             hn_score, hn_comments, relevance_score, relevance_reason, position,
+             included, source),
         )
         _get_conn().commit()
         return cur.lastrowid
@@ -221,6 +501,10 @@ def article_list(newsletter_id: int) -> list[dict]:
 def article_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"summary", "included", "title", "url", "relevance_score", "relevance_reason", "position"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"article_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE articles SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -240,6 +524,40 @@ def article_reorder(newsletter_id: int, ordered_ids: list[int]):
 def article_hn_ids(newsletter_id: int) -> set[int]:
     rows = _get_conn().execute(
         "SELECT hn_id FROM articles WHERE newsletter_id=?", (newsletter_id,)
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def article_count(newsletter_id: int) -> int:
+    row = _get_conn().execute(
+        "SELECT COUNT(*) FROM articles WHERE newsletter_id=?", (newsletter_id,)
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def article_auto_select(newsletter_id: int, top_n: int):
+    """Mark top_n articles by relevance as included=1, rest as included=0."""
+    articles = article_list(newsletter_id)
+    sorted_arts = sorted(articles, key=lambda a: a.get("relevance_score", 0), reverse=True)
+    with _lock:
+        for i, a in enumerate(sorted_arts):
+            _get_conn().execute(
+                "UPDATE articles SET included=? WHERE id=?",
+                (1 if i < top_n else 0, a["id"])
+            )
+        _get_conn().commit()
+
+
+def article_all_hn_ids() -> set[int]:
+    rows = _get_conn().execute(
+        "SELECT hn_id FROM articles WHERE hn_id IS NOT NULL"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def article_all_urls() -> set[str]:
+    rows = _get_conn().execute(
+        "SELECT url FROM articles WHERE url IS NOT NULL AND url != ''"
     ).fetchall()
     return {r[0] for r in rows}
 
@@ -268,6 +586,10 @@ def prompt_create(name: str, type_: str, content: str) -> dict:
 def prompt_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"name", "content", "active"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"prompt_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE prompts SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -290,7 +612,8 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
     try:
         with _lock:
             cur = _get_conn().execute(
-                "INSERT INTO subscribers(email, name) VALUES(?,?)", (email, name)
+                "INSERT INTO subscribers(email, name, unsubscribe_token) VALUES(?,?,?)",
+                (email, name, str(uuid.uuid4())),
             )
             _get_conn().commit()
         return dict(_get_conn().execute("SELECT * FROM subscribers WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -301,6 +624,10 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
 def subscriber_update(id: int, **kwargs):
     if not kwargs:
         return
+    allowed = {"active", "name"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"subscriber_update: disallowed columns {bad}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -317,6 +644,21 @@ def subscriber_active() -> list[dict]:
     return [dict(r) for r in _get_conn().execute(
         "SELECT * FROM subscribers WHERE active=1"
     ).fetchall()]
+
+
+def subscriber_get_by_token(token: str) -> dict | None:
+    row = _get_conn().execute(
+        "SELECT * FROM subscribers WHERE unsubscribe_token=?", (token,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def subscriber_unsubscribe_by_token(token: str):
+    with _lock:
+        _get_conn().execute(
+            "UPDATE subscribers SET active=0 WHERE unsubscribe_token=?", (token,)
+        )
+        _get_conn().commit()
 
 
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────
@@ -339,3 +681,128 @@ def audit_recent(limit: int = 50) -> list[dict]:
         "SELECT * FROM llm_audit_log ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── Email Templates ───────────────────────────────────────────────────────────
+
+def email_template_list() -> list[dict]:
+    rows = _get_conn().execute("SELECT * FROM email_templates ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def email_template_get(id: int) -> dict | None:
+    row = _get_conn().execute("SELECT * FROM email_templates WHERE id=?", (id,)).fetchone()
+    return dict(row) if row else None
+
+
+def email_template_default() -> dict | None:
+    row = _get_conn().execute("SELECT * FROM email_templates ORDER BY id LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def email_template_create(name: str, description: str, subject: str, html: str, article_html: str) -> dict:
+    with _lock:
+        cur = _get_conn().execute(
+            "INSERT INTO email_templates(name, description, subject, html, article_html) VALUES (?,?,?,?,?)",
+            (name, description, subject, html, article_html),
+        )
+        _get_conn().commit()
+    return dict(_get_conn().execute("SELECT * FROM email_templates WHERE id=?", (cur.lastrowid,)).fetchone())
+
+
+def email_template_update(id: int, **kwargs):
+    if not kwargs:
+        return
+    allowed = {"name", "description", "subject", "html", "article_html"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"email_template_update: disallowed columns {bad}")
+    fields = ", ".join(f"{k}=?" for k in kwargs)
+    with _lock:
+        _get_conn().execute(f"UPDATE email_templates SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().commit()
+
+
+def email_template_delete(id: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM email_templates WHERE id=? AND is_builtin=0", (id,))
+        _get_conn().commit()
+
+
+def newsletter_get_template_id(newsletter_id: int) -> int | None:
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"tmpl_{newsletter_id}",)
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def newsletter_set_template_id(newsletter_id: int, template_id: int):
+    cfg_set(f"tmpl_{newsletter_id}", str(template_id))
+
+
+def newsletter_get_subject(newsletter_id: int) -> str | None:
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"subject_{newsletter_id}",)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def newsletter_set_subject(newsletter_id: int, subject: str):
+    cfg_set(f"subject_{newsletter_id}", subject)
+
+
+def newsletter_get_toc(newsletter_id: int) -> bool:
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"toc_{newsletter_id}",)
+    ).fetchone()
+    return row[0] == "1" if row else False
+
+
+def newsletter_set_toc(newsletter_id: int, enabled: bool):
+    cfg_set(f"toc_{newsletter_id}", "1" if enabled else "0")
+
+
+# ── RSS Feeds ─────────────────────────────────────────────────────────────────
+
+def rss_feed_list() -> list[dict]:
+    rows = _get_conn().execute("SELECT * FROM rss_feeds ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def rss_feed_active() -> list[dict]:
+    rows = _get_conn().execute(
+        "SELECT * FROM rss_feeds WHERE active=1"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rss_feed_create(url: str, name: str, max_articles: int = 5) -> dict | None:
+    try:
+        with _lock:
+            cur = _get_conn().execute(
+                "INSERT INTO rss_feeds(url, name, max_articles) VALUES(?,?,?)",
+                (url, name, max_articles),
+            )
+            _get_conn().commit()
+        return dict(_get_conn().execute("SELECT * FROM rss_feeds WHERE id=?", (cur.lastrowid,)).fetchone())
+    except Exception:
+        return None
+
+
+def rss_feed_update(id: int, **kwargs):
+    if not kwargs:
+        return
+    allowed = {"active", "name", "max_articles", "url"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"rss_feed_update: disallowed columns {bad}")
+    fields = ", ".join(f"{k}=?" for k in kwargs)
+    with _lock:
+        _get_conn().execute(f"UPDATE rss_feeds SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().commit()
+
+
+def rss_feed_delete(id: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM rss_feeds WHERE id=?", (id,))
+        _get_conn().commit()
