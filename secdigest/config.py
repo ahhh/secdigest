@@ -23,6 +23,7 @@ DB_CONFIG_DEFAULTS = {
     "fetch_time":    os.environ.get("FETCH_TIME", "00:00"),
     "hn_min_score":  os.environ.get("HN_MIN_SCORE", "50"),
     "max_articles":  os.environ.get("MAX_ARTICLES", "15"),
+    "max_curator_articles": os.environ.get("MAX_CURATOR_ARTICLES", "10"),
     "base_url":      os.environ.get("BASE_URL", "http://localhost:8000"),
     "auto_send":     "0",
     "password_hash": DEFAULT_PASSWORD_HASH,

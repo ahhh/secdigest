@@ -27,6 +27,7 @@
     <form action="/day/{{ date_str }}/summarize" method="post" style="display:inline">
       <button class="btn btn-outline">&#x2726; Summarize</button>
     </form>
+    <a href="/day/{{ date_str }}/pool" class="btn btn-ghost">&#x25CE; View Pool</a>
     <form action="/day/{{ date_str }}/send" method="post" style="display:inline"
           onsubmit="return confirm('Send to all active subscribers?')">
       <button class="btn btn-primary">&#x2709; Send Newsletter</button>

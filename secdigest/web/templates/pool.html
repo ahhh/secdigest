@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — Article Pool {{ date_str }}{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Article Pool
+      <span class="badge badge-gray">{{ date_str }}</span>
+    </h1>
+    <p class="page-sub">
+      {{ articles | length }} total &nbsp;·&nbsp;
+      {{ included_count }} included &nbsp;·&nbsp;
+      {{ (articles | length) - included_count }} in pool
+    </p>
+  </div>
+  <div class="btn-group">
+    <form action="/day/{{ date_str }}/auto-select" method="post" style="display:inline">
+      <button class="btn btn-primary">&#x25B2; Auto-select Top {{ max_curator }}</button>
+    </form>
+    <a href="/day/{{ date_str }}" class="btn btn-ghost">&#x2190; Curator</a>
+  </div>
+</div>
+
+{% if not articles %}
+<div class="empty-state">
+  <div class="empty-icon">&#x25CE;</div>
+  <p>No articles yet for {{ date_str }}.</p>
+</div>
+{% else %}
+<div class="article-list">
+  {% for a in articles %}
+  <div class="article-card {% if not a.included %}article-excluded{% endif %}">
+    <div class="article-body">
+      <div class="article-meta">
+        <span class="relevance-score">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
+        {% if a.source == 'rss' %}
+        <span class="badge badge-blue" style="font-size:.7em;">RSS</span>
+        {% elif a.source == 'manual' %}
+        <span class="badge badge-gray" style="font-size:.7em;">manual</span>
+        {% else %}
+        <span class="hn-score">HN {{ a.hn_score }}</span>
+        <span class="hn-comments">{{ a.hn_comments }} comments</span>
+        {% endif %}
+        {% if a.relevance_reason %}
+        <span class="relevance-reason" title="{{ a.relevance_reason }}">&#x24D8;</span>
+        {% endif %}
+        <span class="badge badge-{{ 'green' if a.included else 'gray' }}" style="margin-left:auto;">
+          {{ 'included' if a.included else 'pool' }}
+        </span>
+      </div>
+
+      {% if a.url or a.hn_url %}
+      <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">{{ a.title }}</a>
+      {% else %}
+      <span class="article-title" style="cursor:default;">{{ a.title }}</span>
+      {% endif %}
+
+      {% if a.summary %}
+      <p class="summary-text">{{ a.summary }}</p>
+      {% endif %}
+
+      <div class="article-actions" style="margin-top:8px;">
+        <form action="/day/{{ date_str }}/article/{{ a.id }}/toggle" method="post" style="display:inline">
+          <button type="submit" class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
+            {% if a.included %}&#x2715; Move to Pool{% else %}+ Include{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

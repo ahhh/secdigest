@@ -85,7 +85,7 @@ async def day_fetch(request: Request, date_str: str):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     newsletter = db.newsletter_get(date_str)
-    if newsletter and db.article_hn_ids(newsletter["id"]):
+    if newsletter and db.article_count(newsletter["id"]) > 0:
         return RedirectResponse(f"/day/{date_str}?msg=Articles+already+fetched", status_code=302)
     asyncio.create_task(fetcher.run_fetch(date_str))
     return RedirectResponse(f"/day/{date_str}?fetching=1", status_code=302)
@@ -145,6 +145,38 @@ async def day_send(request: Request, date_str: str):
     status = "ok" if ok else "error"
     return RedirectResponse(
         f"/day/{date_str}?msg={msg.replace(' ', '+')}&status={status}", status_code=302
+    )
+
+
+@router.get("/day/{date_str}/pool", response_class=HTMLResponse)
+async def day_pool(request: Request, date_str: str):
+    if not is_authed(request):
+        return redirect_login()
+    newsletter = db.newsletter_get(date_str)
+    articles = db.article_list(newsletter["id"]) if newsletter else []
+    articles = sorted(articles, key=lambda a: a.get("relevance_score", 0), reverse=True)
+    included_count = sum(1 for a in articles if a.get("included", 1))
+    max_curator = int(db.cfg_get("max_curator_articles") or 10)
+    return templates.TemplateResponse("pool.html", {
+        "request": request,
+        "date_str": date_str,
+        "newsletter": newsletter,
+        "articles": articles,
+        "included_count": included_count,
+        "max_curator": max_curator,
+    })
+
+
+@router.post("/day/{date_str}/auto-select")
+async def auto_select(request: Request, date_str: str):
+    if not is_authed(request):
+        return RedirectResponse(f"/day/{date_str}/pool", status_code=302)
+    newsletter = db.newsletter_get(date_str)
+    max_curator = int(db.cfg_get("max_curator_articles") or 10)
+    if newsletter:
+        db.article_auto_select(newsletter["id"], max_curator)
+    return RedirectResponse(
+        f"/day/{date_str}/pool?msg=Top+{max_curator}+articles+selected", status_code=302
     )
 
 

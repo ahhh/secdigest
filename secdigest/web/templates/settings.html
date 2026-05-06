@@ -37,6 +37,11 @@
              class="input input-sm" min="1" max="50">
     </div>
     <div class="form-group">
+      <label class="label">Max curator articles <span class="text-muted">(top N auto-included, rest in pool)</span></label>
+      <input type="number" name="max_curator_articles" value="{{ cfg.max_curator_articles }}"
+             class="input input-sm" min="1" max="50">
+    </div>
+    <div class="form-group">
       <label class="checkbox-label">
         <input type="checkbox" name="auto_send" {% if cfg.auto_send == '1' %}checked{% endif %}>
         Auto-send newsletter after daily fetch

@@ -33,7 +33,17 @@ CREATE TABLE IF NOT EXISTS articles (
     summary         TEXT,
     position        INTEGER DEFAULT 0,
     included        INTEGER DEFAULT 1,
+    source          TEXT    DEFAULT 'hn',
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rss_feeds (
+    id           INTEGER PRIMARY KEY,
+    url          TEXT    UNIQUE NOT NULL,
+    name         TEXT    NOT NULL DEFAULT '',
+    active       INTEGER DEFAULT 1,
+    max_articles INTEGER DEFAULT 5,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS prompts (
@@ -267,6 +277,7 @@ def init_db():
         _seed_prompts(conn)
         _seed_email_templates(conn)
         _migrate_subscriber_tokens(conn)
+        _migrate_article_source(conn)
         _migrate_builtin_template_unsubscribe(conn)
         _migrate_summary_prompt(conn)
         _migrate_builtin_remove_hn_links(conn)
@@ -321,6 +332,16 @@ def _migrate_summary_prompt(conn):
     if row and row[1].strip() == _OLD_SUMMARY_PROMPT.strip():
         conn.execute("UPDATE prompts SET content=? WHERE id=?", (_NEW_SUMMARY_PROMPT, row[0]))
         conn.commit()
+
+
+def _migrate_article_source(conn):
+    try:
+        conn.execute("ALTER TABLE articles ADD COLUMN source TEXT DEFAULT 'hn'")
+        conn.commit()
+    except Exception:
+        pass
+    conn.execute("UPDATE articles SET source='manual' WHERE hn_id IS NULL AND source='hn'")
+    conn.commit()
 
 
 def _migrate_builtin_remove_hn_links(conn):
@@ -447,17 +468,19 @@ def article_get(id: int) -> dict | None:
 
 def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
                    hn_score: int, hn_comments: int, relevance_score: float,
-                   relevance_reason: str, position: int) -> int:
+                   relevance_reason: str, position: int,
+                   included: int = 1, source: str = 'hn') -> int:
     hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else None
     with _lock:
         cur = _get_conn().execute(
             """INSERT OR IGNORE INTO articles
                (newsletter_id, hn_id, title, url, hn_url, hn_score, hn_comments,
-                relevance_score, relevance_reason, position)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                relevance_score, relevance_reason, position, included, source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (newsletter_id, hn_id, title, url,
              hn_url,
-             hn_score, hn_comments, relevance_score, relevance_reason, position),
+             hn_score, hn_comments, relevance_score, relevance_reason, position,
+             included, source),
         )
         _get_conn().commit()
         return cur.lastrowid
@@ -495,6 +518,26 @@ def article_hn_ids(newsletter_id: int) -> set[int]:
         "SELECT hn_id FROM articles WHERE newsletter_id=?", (newsletter_id,)
     ).fetchall()
     return {r[0] for r in rows}
+
+
+def article_count(newsletter_id: int) -> int:
+    row = _get_conn().execute(
+        "SELECT COUNT(*) FROM articles WHERE newsletter_id=?", (newsletter_id,)
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def article_auto_select(newsletter_id: int, top_n: int):
+    """Mark top_n articles by relevance as included=1, rest as included=0."""
+    articles = article_list(newsletter_id)
+    sorted_arts = sorted(articles, key=lambda a: a.get("relevance_score", 0), reverse=True)
+    with _lock:
+        for i, a in enumerate(sorted_arts):
+            _get_conn().execute(
+                "UPDATE articles SET included=? WHERE id=?",
+                (1 if i < top_n else 0, a["id"])
+            )
+        _get_conn().commit()
 
 
 def article_all_hn_ids() -> set[int]:
@@ -697,3 +740,45 @@ def newsletter_get_toc(newsletter_id: int) -> bool:
 
 def newsletter_set_toc(newsletter_id: int, enabled: bool):
     cfg_set(f"toc_{newsletter_id}", "1" if enabled else "0")
+
+
+# ── RSS Feeds ─────────────────────────────────────────────────────────────────
+
+def rss_feed_list() -> list[dict]:
+    rows = _get_conn().execute("SELECT * FROM rss_feeds ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def rss_feed_active() -> list[dict]:
+    rows = _get_conn().execute(
+        "SELECT * FROM rss_feeds WHERE active=1"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def rss_feed_create(url: str, name: str, max_articles: int = 5) -> dict | None:
+    try:
+        with _lock:
+            cur = _get_conn().execute(
+                "INSERT INTO rss_feeds(url, name, max_articles) VALUES(?,?,?)",
+                (url, name, max_articles),
+            )
+            _get_conn().commit()
+        return dict(_get_conn().execute("SELECT * FROM rss_feeds WHERE id=?", (cur.lastrowid,)).fetchone())
+    except Exception:
+        return None
+
+
+def rss_feed_update(id: int, **kwargs):
+    if not kwargs:
+        return
+    fields = ", ".join(f"{k}=?" for k in kwargs)
+    with _lock:
+        _get_conn().execute(f"UPDATE rss_feeds SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().commit()
+
+
+def rss_feed_delete(id: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM rss_feeds WHERE id=?", (id,))
+        _get_conn().commit()

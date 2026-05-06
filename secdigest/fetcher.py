@@ -101,31 +101,28 @@ _KW_MED = re.compile(
 )
 
 
-def _keyword_score(articles: list[dict]) -> list[dict]:
-    """Simple keyword fallback when Claude is unavailable."""
-    results = []
+def _keyword_score(articles: list[dict]) -> None:
+    """Keyword fallback — scores articles in-place that don't already have relevance_score."""
     for a in articles:
-        title = a["title"]
-        if _KW_HIGH.search(title):
-            score, reason = 7.0, "keyword match (high)"
-        elif _KW_MED.search(title):
-            score, reason = 5.0, "keyword match (medium)"
-        else:
-            score, reason = 1.0, "no security keywords"
-        results.append({"id": a["id"], "score": score, "reason": reason})
-    return results
+        if "relevance_score" not in a:
+            title = a["title"]
+            if _KW_HIGH.search(title):
+                a["relevance_score"], a["relevance_reason"] = 7.0, "keyword match (high)"
+            elif _KW_MED.search(title):
+                a["relevance_score"], a["relevance_reason"] = 5.0, "keyword match (medium)"
+            else:
+                a["relevance_score"], a["relevance_reason"] = 1.0, "no security keywords"
 
 
-def _score_article(article: dict, custom_instructions: str) -> dict:
-    """Call Claude to score a single article. Returns {id, score, reason}."""
+def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]:
+    """Call Claude to score a single article. Returns (score, reason)."""
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or None)
 
     user_prompt = (
         f"{custom_instructions}\n\n"
-        f"Article ID: {article['id']}\n"
         f"Title: {article['title']}\n"
         f"URL: {article.get('url', '')}\n\n"
-        f'Return JSON: {{"id": {article["id"]}, "score": <0-10>, "reason": "<one sentence>"}}'
+        f'Return JSON: {{"score": <0-10>, "reason": "<one sentence>"}}'
     )
 
     resp = client.messages.create(
@@ -142,10 +139,9 @@ def _score_article(article: dict, custom_instructions: str) -> dict:
         text = "\n".join(lines[1:end])
 
     result = json.loads(text)
-    score = result.get("score", "?")
+    score = float(result.get("score", 0))
     reason = result.get("reason", "")
-    title = article.get("title", "")[:70]
-    snippet = f"[{score}/10] {title} — {reason}"
+    snippet = f"[{score}/10] {article.get('title', '')[:70]} — {reason}"
 
     usage = resp.usage
     db.audit_log(
@@ -155,63 +151,66 @@ def _score_article(article: dict, custom_instructions: str) -> dict:
         article_id=None, result_snippet=snippet,
     )
 
-    return result
+    return score, reason
 
 
 def score_articles(articles: list[dict]) -> list[dict]:
-    """Score each article individually via Claude. Adds relevance_score/reason to each."""
+    """Score each article individually via Claude. Modifies articles in-place."""
     prompts = db.prompt_list(type_filter="curation")
     custom = "\n\n".join(p["content"] for p in prompts if p["active"]) or "Use the scoring guide."
 
-    scores: dict[int, dict] = {}
     llm_error: str | None = None
 
     for article in articles:
         try:
-            item = _score_article(article, custom)
-            scores[item["id"]] = item
+            score, reason = _score_article(article, custom)
+            article["relevance_score"] = score
+            article["relevance_reason"] = reason
         except Exception as e:
             llm_error = str(e)
-            print(f"[fetcher] curation error for article {article['id']}: {e}")
+            print(f"[fetcher] curation error: {e}")
 
     if llm_error:
         db.cfg_set("last_curation_error", llm_error)
-        unscored = [a for a in articles if a["id"] not in scores]
-        print(f"[fetcher] falling back to keyword scoring for {len(unscored)} articles")
-        for item in _keyword_score(unscored):
-            scores[item["id"]] = item
+        _keyword_score(articles)
     else:
         db.cfg_set("last_curation_error", "")
 
     for a in articles:
-        s = scores.get(a["id"], {})
-        a["relevance_score"] = float(s.get("score", 0))
-        a["relevance_reason"] = s.get("reason", "")
+        a.setdefault("relevance_score", 0.0)
+        a.setdefault("relevance_reason", "")
 
     return articles
 
 
 async def run_fetch(date_str: str | None = None) -> dict:
-    """Full pipeline: fetch HN → score → store. Returns the newsletter dict."""
+    """Full pipeline: fetch HN + RSS → score → store. Returns the newsletter dict."""
     if date_str is None:
         date_str = dt_date.today().isoformat()
 
     newsletter = db.newsletter_get_or_create(date_str)
-    existing_ids = db.article_hn_ids(newsletter["id"])
 
-    if existing_ids:
-        print(f"[fetcher] {date_str} already has {len(existing_ids)} articles, skipping")
+    if db.article_count(newsletter["id"]) > 0:
+        print(f"[fetcher] {date_str} already has articles, skipping")
         return newsletter
 
     print(f"[fetcher] fetching HN top + new for {date_str}...")
     candidates = await fetch_all_candidates()
 
+    from secdigest import rss as rss_module
+    rss_candidates = await asyncio.to_thread(rss_module.fetch_all_rss)
+
     historical_urls = db.article_all_urls()
-    new_stories = [
-        s for s in candidates
-        if not s["url"] or s["url"] not in historical_urls
-    ]
-    print(f"[fetcher] {len(candidates)} candidates, {len(new_stories)} after dedup")
+    seen_urls: set[str] = set()
+    new_stories: list[dict] = []
+    for s in candidates + rss_candidates:
+        url = s.get("url", "")
+        if (not url or url not in historical_urls) and url not in seen_urls:
+            seen_urls.add(url)
+            new_stories.append(s)
+
+    print(f"[fetcher] {len(candidates)} HN + {len(rss_candidates)} RSS candidates, "
+          f"{len(new_stories)} after dedup")
 
     if not new_stories:
         return newsletter
@@ -219,22 +218,31 @@ async def run_fetch(date_str: str | None = None) -> dict:
     print(f"[fetcher] scoring {len(new_stories)} stories...")
     scored = score_articles(new_stories)
 
+    max_articles = int(db.cfg_get("max_articles") or 15)
+    max_curator = int(db.cfg_get("max_curator_articles") or 10)
+
     relevant = sorted(
         [s for s in scored if s["relevance_score"] >= 5.0],
-        key=lambda x: x["relevance_score"] * (x["score"] ** 0.5),
+        key=lambda x: x["relevance_score"] * ((x.get("score") or 0) ** 0.5),
         reverse=True,
     )
 
-    max_articles = int(db.cfg_get("max_articles") or 15)
     for pos, story in enumerate(relevant[:max_articles]):
+        included = 1 if pos < max_curator else 0
         db.article_insert(
             newsletter_id=newsletter["id"],
-            hn_id=story["id"], title=story["title"], url=story["url"],
-            hn_score=story["score"], hn_comments=story["comments"],
+            hn_id=story.get("id") if story.get("source", "hn") == "hn" else None,
+            title=story["title"],
+            url=story.get("url", ""),
+            hn_score=story.get("score", 0),
+            hn_comments=story.get("comments", 0),
             relevance_score=story["relevance_score"],
             relevance_reason=story["relevance_reason"],
             position=pos,
+            included=included,
+            source=story.get("source", "hn"),
         )
 
-    print(f"[fetcher] inserted {min(len(relevant), max_articles)} articles")
+    print(f"[fetcher] stored {min(len(relevant), max_articles)} articles, "
+          f"{min(len(relevant), max_curator)} included")
     return db.newsletter_get(date_str)
