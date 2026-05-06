@@ -34,15 +34,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="SecDigest")
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=config.SECRET_KEY,
-    max_age=86400 * 7,
-    same_site="strict",
-    https_only=False,  # set to True in production behind TLS
-)
 
 
+# NOTE on middleware order: Starlette's add_middleware uses insert(0, ...), so the
+# LAST middleware registered becomes the OUTERMOST one (runs first on incoming
+# requests). We need SessionMiddleware to run before force_default_password_reset
+# so that request.session is populated. Therefore the @middleware decorator must
+# come BEFORE add_middleware(SessionMiddleware, ...) in source order.
 @app.middleware("http")
 async def force_default_password_reset(request: Request, call_next):
     path = request.url.path
@@ -52,9 +50,21 @@ async def force_default_password_reset(request: Request, call_next):
         or path.startswith("/static/")
         or path.startswith("/unsubscribe/")):
         return await call_next(request)
+    # Defensive: if SessionMiddleware hasn't populated session yet, skip the check
+    if "session" not in request.scope:
+        return await call_next(request)
     if is_authed(request) and auth.is_default_password():
         return RedirectResponse("/forced-password-change", status_code=302)
     return await call_next(request)
+
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=config.SECRET_KEY,
+    max_age=86400 * 7,
+    same_site="strict",
+    https_only=False,  # set to True in production behind TLS
+)
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
