@@ -140,7 +140,7 @@ You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 
 _TMPL_DARK_ARTICLE = """\
 <tr><td style="padding:16px 0;border-bottom:1px solid #21262d;">
-<div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number} &nbsp;&middot;&nbsp; HN {hn_score} pts &nbsp;&middot;&nbsp; {hn_comments} comments</div>
+<div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number}</div>
 <a href="{url}" style="color:#58a6ff;font-size:1.05em;font-weight:600;text-decoration:none;">{title}</a>
 <p style="color:#c9d1d9;margin:8px 0 4px;font-size:.9em;line-height:1.5;">{summary}</p>
 </td></tr>"""
@@ -165,7 +165,7 @@ You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 
 _TMPL_LIGHT_ARTICLE = """\
 <tr><td style="padding:20px 0;border-bottom:1px solid #e1e4e8;">
-<div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number} &middot; HN {hn_score} pts &middot; {hn_comments} comments</div>
+<div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number}</div>
 <a href="{url}" style="color:#0969da;font-size:1em;font-weight:600;text-decoration:none;line-height:1.4;">{title}</a>
 <p style="color:#24292f;margin:8px 0 6px;font-size:.875em;line-height:1.6;">{summary}</p>
 </td></tr>"""
@@ -268,7 +268,7 @@ You're receiving this because you subscribed to SecDigest.<br>
 
 _TMPL_MOBILE_DARK_ARTICLE = """\
 <tr><td style="padding:18px 4px;border-bottom:1px solid #21262d;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
-<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#6e7681;margin-bottom:4px;letter-spacing:.04em;">#{number} &middot; HN {hn_score} pts</div>
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#6e7681;margin-bottom:4px;letter-spacing:.04em;">#{number}</div>
 <a href="{url}" style="display:block;color:#58a6ff;font-size:17px;font-weight:600;text-decoration:none;line-height:1.35;padding:10px 0;">{title}</a>
 <div style="color:#c9d1d9;font-size:15px;line-height:1.6;margin-top:4px;">{summary}</div>
 </td></tr>"""
@@ -309,7 +309,7 @@ You're receiving this because you subscribed to SecDigest.<br>
 
 _TMPL_MOBILE_LIGHT_ARTICLE = """\
 <tr><td style="padding:18px 0;border-bottom:1px solid #e1e4e8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
-<div style="font-size:12px;color:#6e7781;margin-bottom:4px;letter-spacing:.02em;">#{number} &middot; HN {hn_score} pts</div>
+<div style="font-size:12px;color:#6e7781;margin-bottom:4px;letter-spacing:.02em;">#{number}</div>
 <a href="{url}" style="display:block;color:#0969da;font-size:17px;font-weight:600;text-decoration:none;line-height:1.35;padding:10px 0;">{title}</a>
 <div style="color:#1f2328;font-size:15px;line-height:1.6;margin-top:4px;">{summary}</div>
 </td></tr>"""
@@ -389,6 +389,7 @@ def init_db():
         _migrate_builtin_remove_hn_links(conn)
         _migrate_add_grid_template(conn)
         _migrate_add_mobile_templates(conn)
+        _migrate_builtin_remove_hn_points(conn)
 
 
 def _seed_config(conn):
@@ -461,6 +462,30 @@ def _migrate_builtin_remove_hn_links(conn):
     for row in rows:
         if "{hn_url}" in row[1]:
             new_html = re.sub(r'\s*<a href="\{hn_url\}"[^>]*>[^<]*</a>', "", row[1])
+            conn.execute("UPDATE email_templates SET article_html=? WHERE id=?", (new_html, row[0]))
+            changed = True
+    if changed:
+        conn.commit()
+
+
+def _migrate_builtin_remove_hn_points(conn):
+    """Strip the 'HN {hn_score} pts [· {hn_comments} comments]' meta from built-in article templates."""
+    import re
+    rows = conn.execute(
+        "SELECT id, article_html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    # Matches the optional separator before, the points text, and the optional
+    # ' · {hn_comments} comments' suffix that follows in the older templates.
+    pattern = re.compile(
+        r'\s*(?:&nbsp;)?&middot;(?:&nbsp;)?\s*HN\s*\{hn_score\}\s*pts'
+        r'(?:\s*(?:&nbsp;)?&middot;(?:&nbsp;)?\s*\{hn_comments\}\s*comments)?'
+    )
+    changed = False
+    for row in rows:
+        if "{hn_score}" not in row[1]:
+            continue
+        new_html = pattern.sub("", row[1])
+        if new_html != row[1]:
             conn.execute("UPDATE email_templates SET article_html=? WHERE id=?", (new_html, row[0]))
             changed = True
     if changed:
