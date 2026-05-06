@@ -8,6 +8,27 @@ from email.mime.text import MIMEText
 from secdigest import db
 
 
+def _render_toc(included: list[dict], is_2col: bool = False) -> str:
+    """Return a table-of-contents <tr> block with anchor links to each article."""
+    items = "".join(
+        f'<div style="margin-bottom:5px;">'
+        f'<a href="#article-{i+1}" style="color:#58a6ff;text-decoration:none;font-size:.85em;line-height:1.4;">'
+        f'<span style="font-family:monospace;color:#6e7681;margin-right:6px;">#{i+1}</span>'
+        f'{a.get("title", "")}'
+        f'</a></div>'
+        for i, a in enumerate(included)
+    )
+    col = ' colspan="2"' if is_2col else ''
+    return (
+        f'<tr><td{col} style="padding:14px 0 20px;border-bottom:1px solid #30363d;margin-bottom:4px;">'
+        f'<div style="font-size:.7em;text-transform:uppercase;letter-spacing:.08em;'
+        f'color:#6e7681;font-family:monospace;margin-bottom:10px;">Contents</div>'
+        f'{items}'
+        f'</td></tr>'
+        f'<tr><td{col} style="height:8px;"></td></tr>'
+    )
+
+
 def _render_article(article_html: str, a: dict, n: int) -> str:
     url = a.get("url") or a.get("hn_url") or ""
     summary = a.get("summary") or "<em>No summary generated.</em>"
@@ -24,7 +45,8 @@ def _render_article(article_html: str, a: dict, n: int) -> str:
 
 def render_email_html(newsletter: dict, articles: list[dict],
                       template_id: int | None = None,
-                      unsubscribe_url: str = "") -> str:
+                      unsubscribe_url: str = "",
+                      include_toc: bool = False) -> str:
     """Render the newsletter as HTML using the specified or configured template."""
     template = db.email_template_get(template_id) if template_id else None
     if not template:
@@ -37,22 +59,38 @@ def render_email_html(newsletter: dict, articles: list[dict],
 
     included = [a for a in articles if a.get("included", 1)]
     art_html = template["article_html"]
+    is_2col = "{articles_2col}" in template["html"]
 
     # Standard single-column list
-    rows_1col = "".join(_render_article(art_html, a, i + 1) for i, a in enumerate(included))
+    rows_1col = ""
+    for i, a in enumerate(included):
+        rendered = _render_article(art_html, a, i + 1)
+        if include_toc:
+            rendered = rendered.replace("<tr", f'<tr id="article-{i+1}"', 1)
+        rows_1col += rendered
 
     # 2-column grid — pairs of <td> cells wrapped in <tr>s
     rows_2col = ""
+    n = 0
     for i in range(0, len(included), 2):
         pair = included[i:i + 2]
         rows_2col += '<tr valign="top">'
         for j, a in enumerate(pair):
-            rows_2col += _render_article(art_html, a, i + j + 1)
+            n += 1
+            rendered = _render_article(art_html, a, n)
+            if include_toc:
+                rendered = rendered.replace("<td", f'<td id="article-{n}"', 1)
+            rows_2col += rendered
         if len(pair) == 1:
             rows_2col += '<td style="width:50%;padding:6px;"></td>'
         rows_2col += "</tr>"
         if i + 2 < len(included):
             rows_2col += '<tr><td colspan="2" style="height:6px;"></td></tr>'
+
+    if include_toc and included:
+        toc = _render_toc(included, is_2col=is_2col)
+        rows_1col = toc + rows_1col
+        rows_2col = toc + rows_2col
 
     html = template["html"]
     html = html.replace("{articles}", rows_1col)
@@ -106,6 +144,7 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
 
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
+    include_toc = db.newsletter_get_toc(newsletter["id"])
 
     port = int(cfg.get("smtp_port", 587))
     smtp_user = cfg.get("smtp_user", "")
@@ -129,7 +168,7 @@ def send_newsletter(date_str: str) -> tuple[bool, str]:
             for sub in subscribers:
                 token = sub.get("unsubscribe_token", "")
                 unsub_url = f"{base_url}/unsubscribe/{token}" if token else ""
-                html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url)
+                html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url, include_toc=include_toc)
                 text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
                 msg = MIMEMultipart("alternative")
                 msg["Subject"] = subject

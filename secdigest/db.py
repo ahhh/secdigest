@@ -686,3 +686,14 @@ def newsletter_get_subject(newsletter_id: int) -> str | None:
 
 def newsletter_set_subject(newsletter_id: int, subject: str):
     cfg_set(f"subject_{newsletter_id}", subject)
+
+
+def newsletter_get_toc(newsletter_id: int) -> bool:
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"toc_{newsletter_id}",)
+    ).fetchone()
+    return row[0] == "1" if row else False
+
+
+def newsletter_set_toc(newsletter_id: int, enabled: bool):
+    cfg_set(f"toc_{newsletter_id}", "1" if enabled else "0")

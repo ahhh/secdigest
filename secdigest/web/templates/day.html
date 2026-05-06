@@ -118,6 +118,14 @@
                  value="{{ active_subject }}"
                  placeholder="SecDigest — {{ date_str }}">
         </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="checkbox-label">
+            <input type="checkbox" name="include_toc" id="toc-toggle" value="1"
+                   {% if active_toc %}checked{% endif %}
+                   onchange="reloadPreview()">
+            Include table of contents
+          </label>
+        </div>
         <button type="submit" class="btn btn-primary btn-sm" style="width:100%">
           &#x2713; Apply &amp; Save
         </button>
@@ -193,7 +201,7 @@
       <button class="btn btn-ghost btn-sm" onclick="reloadPreview()">&#x21BA; Refresh</button>
     </div>
     <iframe id="email-preview"
-            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}"
+            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}"
             class="preview-frame"
             frameborder="0"
             title="Email preview"></iframe>
@@ -217,8 +225,9 @@ function selectTemplate(id) {
 }
 
 function reloadPreview() {
+  const toc = document.getElementById('toc-toggle') && document.getElementById('toc-toggle').checked ? '1' : '0';
   document.getElementById('email-preview').src =
-    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '');
+    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '') + '&include_toc=' + toc;
 }
 
 function toggleTemplateEditor() {
