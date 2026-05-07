@@ -18,7 +18,18 @@ async def feeds_page(request: Request):
     return templates.TemplateResponse("feeds.html", {
         "request": request,
         "feeds": feeds,
+        "hn_pool_min": int(db.cfg_get("hn_pool_min") or 10),
     })
+
+
+@router.post("/feeds/hn-pool-min")
+async def set_hn_pool_min(request: Request, hn_pool_min: int = Form(...)):
+    if not is_authed(request):
+        return RedirectResponse("/feeds", status_code=302)
+    if hn_pool_min < 0 or hn_pool_min > 50:
+        return RedirectResponse("/feeds?msg=Value+must+be+0-50&status=error", status_code=302)
+    db.cfg_set("hn_pool_min", str(hn_pool_min))
+    return RedirectResponse("/feeds?msg=HN+pool+minimum+updated", status_code=302)
 
 
 @router.post("/feeds/add")

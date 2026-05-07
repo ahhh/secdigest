@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>secdigest // {% if ok %}wired in{% else %}link expired{% endif %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <span class="prompt">&gt;</span>
+    <span class="brand">secdigest<span class="cursor">_</span></span>
+    <span class="topbar-meta">// {% if ok %}connected{% else %}link dead{% endif %}</span>
+  </header>
+
+  <main class="hero narrow">
+    {% if ok %}
+      <h1>you're in.</h1>
+      <p class="lead">
+        you'll get the <strong class="hl">{{ cadence }}</strong> wire from now on.
+        first one shows up at the next scheduled send.
+      </p>
+    {% else %}
+      <h1>that link's dead.</h1>
+      <p class="lead">
+        confirm links are one-shot. if you already clicked it, you're good.
+        otherwise, just sign up again.
+      </p>
+      <p class="back"><a href="/" class="link-back">&lt; subscribe</a></p>
+    {% endif %}
+  </main>
+</body>
+</html>

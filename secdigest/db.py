@@ -12,11 +12,15 @@ PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS newsletters (
-    id          INTEGER PRIMARY KEY,
-    date        TEXT    UNIQUE NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'draft',
-    sent_at     TIMESTAMP,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id           INTEGER PRIMARY KEY,
+    kind         TEXT    NOT NULL DEFAULT 'daily',
+    date         TEXT    NOT NULL,
+    period_start TEXT    NOT NULL,
+    period_end   TEXT    NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'draft',
+    sent_at      TIMESTAMP,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(kind, period_start)
 );
 
 CREATE TABLE IF NOT EXISTS articles (
@@ -34,7 +38,18 @@ CREATE TABLE IF NOT EXISTS articles (
     position        INTEGER DEFAULT 0,
     included        INTEGER DEFAULT 1,
     source          TEXT    DEFAULT 'hn',
+    source_name     TEXT,
+    pin_weekly      INTEGER DEFAULT 0,
+    pin_monthly     INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS digest_articles (
+    digest_id  INTEGER NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    article_id INTEGER NOT NULL REFERENCES articles(id)    ON DELETE CASCADE,
+    position   INTEGER DEFAULT 0,
+    included   INTEGER DEFAULT 1,
+    PRIMARY KEY (digest_id, article_id)
 );
 
 CREATE TABLE IF NOT EXISTS rss_feeds (
@@ -60,6 +75,9 @@ CREATE TABLE IF NOT EXISTS subscribers (
     email             TEXT    UNIQUE NOT NULL,
     name              TEXT    DEFAULT '',
     active            INTEGER DEFAULT 1,
+    cadence           TEXT    NOT NULL DEFAULT 'daily',
+    confirmed         INTEGER DEFAULT 0,
+    confirm_token     TEXT,
     unsubscribe_token TEXT,
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -140,7 +158,7 @@ You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 
 _TMPL_DARK_ARTICLE = """\
 <tr><td style="padding:16px 0;border-bottom:1px solid #21262d;">
-<div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number} &nbsp;&middot;&nbsp; HN {hn_score} pts &nbsp;&middot;&nbsp; {hn_comments} comments</div>
+<div style="font-size:.75em;color:#6e7681;margin-bottom:4px;">#{number}</div>
 <a href="{url}" style="color:#58a6ff;font-size:1.05em;font-weight:600;text-decoration:none;">{title}</a>
 <p style="color:#c9d1d9;margin:8px 0 4px;font-size:.9em;line-height:1.5;">{summary}</p>
 </td></tr>"""
@@ -165,7 +183,7 @@ You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 
 _TMPL_LIGHT_ARTICLE = """\
 <tr><td style="padding:20px 0;border-bottom:1px solid #e1e4e8;">
-<div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number} &middot; HN {hn_score} pts &middot; {hn_comments} comments</div>
+<div style="font-size:.75em;color:#8c959f;margin-bottom:6px;">#{number}</div>
 <a href="{url}" style="color:#0969da;font-size:1em;font-weight:600;text-decoration:none;line-height:1.4;">{title}</a>
 <p style="color:#24292f;margin:8px 0 6px;font-size:.875em;line-height:1.6;">{summary}</p>
 </td></tr>"""
@@ -224,6 +242,96 @@ _TMPL_GRID_ARTICLE = """\
 </table>
 </td>"""
 
+# ── Mobile-optimised templates (Gmail iOS) ────────────────────────────────────
+# Notes on the mobile templates below:
+#   - All styles inlined; Gmail iOS strips <style> reliably for non-Google addrs
+#   - <meta name="format-detection"> stops iOS auto-linking dates/numbers
+#   - <meta name="x-apple-disable-message-reformatting"> stops iOS Mail rescaling
+#   - <meta name="color-scheme"> opts the message into a fixed scheme so Gmail's
+#     auto dark-mode invert does not recolour the dark template
+#   - Hidden preheader <div> controls the inbox preview snippet
+#   - Title links use display:block + ~12px vertical padding so tap targets clear
+#     iOS's 44px minimum
+#   - System font stack (-apple-system) renders SF on iOS, Segoe on Win mail clients
+
+_TMPL_MOBILE_DARK_HTML = """\
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
+<meta name="color-scheme" content="dark">
+<meta name="supported-color-schemes" content="dark">
+<title>SecDigest — {date}</title>
+</head>
+<body style="margin:0;padding:0;background:#0d1117;-webkit-text-size-adjust:100%;" bgcolor="#0d1117">
+<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:#0d1117;">
+SecDigest daily &mdash; {date} &middot; top security stories, summarised.
+</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0d1117" style="background:#0d1117;">
+<tr><td align="center" style="padding:20px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;">
+<tr><td style="padding:6px 4px 18px;border-bottom:2px solid #39ff14;">
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:22px;font-weight:700;color:#39ff14;letter-spacing:-.5px;line-height:1.2;">SecDigest</div>
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:#6e7681;margin-top:6px;"><span style="color:#6e7681;">{date}</span></div>
+</td></tr>
+{articles}
+<tr><td style="padding:24px 4px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7681;border-top:1px solid #21262d;">
+You're receiving this because you subscribed to SecDigest.<br>
+<a href="{unsubscribe_url}" style="color:#58a6ff;text-decoration:underline;">Unsubscribe</a>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>"""
+
+_TMPL_MOBILE_DARK_ARTICLE = """\
+<tr><td style="padding:18px 4px;border-bottom:1px solid #21262d;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#6e7681;margin-bottom:4px;letter-spacing:.04em;">#{number}</div>
+<a href="{url}" style="display:block;color:#58a6ff;font-size:17px;font-weight:600;text-decoration:none;line-height:1.35;padding:10px 0;">{title}</a>
+<div style="color:#c9d1d9;font-size:15px;line-height:1.6;margin-top:4px;">{summary}</div>
+</td></tr>"""
+
+_TMPL_MOBILE_LIGHT_HTML = """\
+<!DOCTYPE html><html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting">
+<meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
+<meta name="color-scheme" content="light">
+<meta name="supported-color-schemes" content="light">
+<title>SecDigest — {date}</title>
+</head>
+<body style="margin:0;padding:0;background:#f6f8fa;-webkit-text-size-adjust:100%;" bgcolor="#f6f8fa">
+<div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:#f6f8fa;">
+SecDigest daily &mdash; {date} &middot; top security stories, summarised.
+</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f8fa" style="background:#f6f8fa;">
+<tr><td align="center" style="padding:20px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;">
+<tr><td style="padding:24px 20px 18px;border-bottom:3px solid #0969da;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="font-size:22px;font-weight:700;color:#0969da;letter-spacing:-.5px;line-height:1.2;">SecDigest</div>
+<div style="font-size:13px;color:#6e7781;margin-top:6px;">{date}</div>
+</td></tr>
+<tr><td style="padding:0 20px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+{articles}
+</table>
+</td></tr>
+<tr><td style="padding:18px 20px 22px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7781;border-top:1px solid #e1e4e8;background:#fafbfc;" bgcolor="#fafbfc">
+You're receiving this because you subscribed to SecDigest.<br>
+<a href="{unsubscribe_url}" style="color:#0969da;text-decoration:underline;">Unsubscribe</a>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>"""
+
+_TMPL_MOBILE_LIGHT_ARTICLE = """\
+<tr><td style="padding:18px 0;border-bottom:1px solid #e1e4e8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="font-size:12px;color:#6e7781;margin-bottom:4px;letter-spacing:.02em;">#{number}</div>
+<a href="{url}" style="display:block;color:#0969da;font-size:17px;font-weight:600;text-decoration:none;line-height:1.35;padding:10px 0;">{title}</a>
+<div style="color:#1f2328;font-size:15px;line-height:1.6;margin-top:4px;">{summary}</div>
+</td></tr>"""
+
 DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Dark Terminal",
@@ -257,6 +365,22 @@ DEFAULT_EMAIL_TEMPLATES = [
         "article_html": _TMPL_GRID_ARTICLE,
         "is_builtin": 1,
     },
+    {
+        "name": "Mobile Dark",
+        "description": "Mobile-first dark layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_MOBILE_DARK_HTML,
+        "article_html": _TMPL_MOBILE_DARK_ARTICLE,
+        "is_builtin": 1,
+    },
+    {
+        "name": "Mobile Light",
+        "description": "Mobile-first light layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+        "subject": "SecDigest — {date}",
+        "html": _TMPL_MOBILE_LIGHT_HTML,
+        "article_html": _TMPL_MOBILE_LIGHT_ARTICLE,
+        "is_builtin": 1,
+    },
 ]
 
 
@@ -282,6 +406,13 @@ def init_db():
         _migrate_summary_prompt(conn)
         _migrate_builtin_remove_hn_links(conn)
         _migrate_add_grid_template(conn)
+        _migrate_add_mobile_templates(conn)
+        _migrate_builtin_remove_hn_points(conn)
+        _migrate_newsletters_kind(conn)
+        _migrate_article_pins(conn)
+        _migrate_article_source_name(conn)
+        _migrate_subscriber_cadence(conn)
+        _migrate_subscriber_confirmation(conn)
 
 
 def _seed_config(conn):
@@ -360,6 +491,103 @@ def _migrate_builtin_remove_hn_links(conn):
         conn.commit()
 
 
+def _migrate_newsletters_kind(conn):
+    """Rebuild legacy newsletters table to add kind/period columns and drop UNIQUE(date)."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(newsletters)").fetchall()}
+    if "kind" in cols:
+        return
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.executescript("""
+            CREATE TABLE newsletters_new (
+                id           INTEGER PRIMARY KEY,
+                kind         TEXT    NOT NULL DEFAULT 'daily',
+                date         TEXT    NOT NULL,
+                period_start TEXT    NOT NULL,
+                period_end   TEXT    NOT NULL,
+                status       TEXT    NOT NULL DEFAULT 'draft',
+                sent_at      TIMESTAMP,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(kind, period_start)
+            );
+            INSERT INTO newsletters_new(id, kind, date, period_start, period_end, status, sent_at, created_at)
+                SELECT id, 'daily', date, date, date, status, sent_at, created_at FROM newsletters;
+            DROP TABLE newsletters;
+            ALTER TABLE newsletters_new RENAME TO newsletters;
+        """)
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
+def _migrate_article_pins(conn):
+    """Add pin_weekly/pin_monthly columns to articles for older DBs."""
+    for col in ("pin_weekly", "pin_monthly"):
+        try:
+            conn.execute(f"ALTER TABLE articles ADD COLUMN {col} INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+
+
+def _migrate_article_source_name(conn):
+    """Add source_name column to articles for older DBs."""
+    try:
+        conn.execute("ALTER TABLE articles ADD COLUMN source_name TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def _migrate_subscriber_cadence(conn):
+    """Add cadence column to subscribers for older DBs."""
+    try:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN cadence TEXT NOT NULL DEFAULT 'daily'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
+def _migrate_subscriber_confirmation(conn):
+    """Add confirmed/confirm_token columns. Existing rows are admin-added so we trust them
+    and backfill confirmed=1 — only public-site signups need the double-opt-in dance."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(subscribers)").fetchall()}
+    added = False
+    if "confirmed" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN confirmed INTEGER DEFAULT 0")
+        conn.execute("UPDATE subscribers SET confirmed=1")
+        added = True
+    if "confirm_token" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN confirm_token TEXT")
+        added = True
+    if added:
+        conn.commit()
+
+
+def _migrate_builtin_remove_hn_points(conn):
+    """Strip the 'HN {hn_score} pts [· {hn_comments} comments]' meta from built-in article templates."""
+    import re
+    rows = conn.execute(
+        "SELECT id, article_html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    # Matches the optional separator before, the points text, and the optional
+    # ' · {hn_comments} comments' suffix that follows in the older templates.
+    pattern = re.compile(
+        r'\s*(?:&nbsp;)?&middot;(?:&nbsp;)?\s*HN\s*\{hn_score\}\s*pts'
+        r'(?:\s*(?:&nbsp;)?&middot;(?:&nbsp;)?\s*\{hn_comments\}\s*comments)?'
+    )
+    changed = False
+    for row in rows:
+        if "{hn_score}" not in row[1]:
+            continue
+        new_html = pattern.sub("", row[1])
+        if new_html != row[1]:
+            conn.execute("UPDATE email_templates SET article_html=? WHERE id=?", (new_html, row[0]))
+            changed = True
+    if changed:
+        conn.commit()
+
+
 def _migrate_add_grid_template(conn):
     """Insert the 2-Column Grid template if it doesn't exist yet."""
     if conn.execute(
@@ -373,6 +601,32 @@ def _migrate_add_grid_template(conn):
              "SecDigest — {date}",
              _TMPL_GRID_HTML, _TMPL_GRID_ARTICLE, 1),
         )
+        conn.commit()
+
+
+def _migrate_add_mobile_templates(conn):
+    """Insert the Mobile Dark and Mobile Light templates if they don't exist yet."""
+    specs = [
+        ("Mobile Dark",
+         "Mobile-first dark layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+         _TMPL_MOBILE_DARK_HTML, _TMPL_MOBILE_DARK_ARTICLE),
+        ("Mobile Light",
+         "Mobile-first light layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
+         _TMPL_MOBILE_LIGHT_HTML, _TMPL_MOBILE_LIGHT_ARTICLE),
+    ]
+    changed = False
+    for name, desc, body, article in specs:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM email_templates WHERE name=?", (name,)
+        ).fetchone()[0]
+        if not existing:
+            conn.execute(
+                "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
+                "VALUES (?,?,?,?,?,1)",
+                (name, desc, "SecDigest — {date}", body, article),
+            )
+            changed = True
+    if changed:
         conn.commit()
 
 
@@ -427,19 +681,35 @@ def cfg_all() -> dict:
 
 # ── Newsletters ───────────────────────────────────────────────────────────────
 
-def newsletter_get_or_create(date_str: str) -> dict:
+def newsletter_get_or_create(date_str: str, kind: str = "daily",
+                              period_start: str | None = None,
+                              period_end: str | None = None) -> dict:
+    """Get or create a newsletter row. For digests, period_start/end define the window;
+    for daily, all three default to date_str."""
     conn = _get_conn()
-    row = conn.execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone()
+    period_start = period_start or date_str
+    period_end = period_end or date_str
+    row = conn.execute(
+        "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
+    ).fetchone()
     if row:
         return dict(row)
     with _lock:
-        conn.execute("INSERT OR IGNORE INTO newsletters(date) VALUES(?)", (date_str,))
+        conn.execute(
+            "INSERT OR IGNORE INTO newsletters(kind, date, period_start, period_end) VALUES(?,?,?,?)",
+            (kind, date_str, period_start, period_end),
+        )
         conn.commit()
-    return dict(conn.execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone())
+    return dict(conn.execute(
+        "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
+    ).fetchone())
 
 
-def newsletter_get(date_str: str) -> dict | None:
-    row = _get_conn().execute("SELECT * FROM newsletters WHERE date=?", (date_str,)).fetchone()
+def newsletter_get(date_str: str, kind: str = "daily") -> dict | None:
+    """Look up a newsletter by its period_start (which equals date for daily)."""
+    row = _get_conn().execute(
+        "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, date_str)
+    ).fetchone()
     return dict(row) if row else None
 
 
@@ -456,10 +726,17 @@ def newsletter_update(id: int, **kwargs):
         _get_conn().commit()
 
 
-def newsletter_list(limit: int = 60) -> list[dict]:
-    rows = _get_conn().execute(
-        "SELECT * FROM newsletters ORDER BY date DESC LIMIT ?", (limit,)
-    ).fetchall()
+def newsletter_list(limit: int = 60, kind: str | None = "daily") -> list[dict]:
+    """List newsletters of the given kind, newest first. Pass kind=None for all kinds."""
+    if kind is None:
+        rows = _get_conn().execute(
+            "SELECT * FROM newsletters ORDER BY period_start DESC LIMIT ?", (limit,)
+        ).fetchall()
+    else:
+        rows = _get_conn().execute(
+            "SELECT * FROM newsletters WHERE kind=? ORDER BY period_start DESC LIMIT ?",
+            (kind, limit),
+        ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -473,18 +750,19 @@ def article_get(id: int) -> dict | None:
 def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
                    hn_score: int, hn_comments: int, relevance_score: float,
                    relevance_reason: str, position: int,
-                   included: int = 1, source: str = 'hn') -> int:
+                   included: int = 1, source: str = 'hn',
+                   source_name: str | None = None) -> int:
     hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else None
     with _lock:
         cur = _get_conn().execute(
             """INSERT OR IGNORE INTO articles
                (newsletter_id, hn_id, title, url, hn_url, hn_score, hn_comments,
-                relevance_score, relevance_reason, position, included, source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                relevance_score, relevance_reason, position, included, source, source_name)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (newsletter_id, hn_id, title, url,
              hn_url,
              hn_score, hn_comments, relevance_score, relevance_reason, position,
-             included, source),
+             included, source, source_name),
         )
         _get_conn().commit()
         return cur.lastrowid
@@ -562,6 +840,144 @@ def article_all_urls() -> set[str]:
     return {r[0] for r in rows}
 
 
+def article_set_pin(article_id: int, period: str, pinned: bool):
+    """period is 'weekly' or 'monthly'."""
+    if period not in ("weekly", "monthly"):
+        raise ValueError(f"article_set_pin: bad period {period!r}")
+    col = f"pin_{period}"
+    with _lock:
+        _get_conn().execute(f"UPDATE articles SET {col}=? WHERE id=?", (1 if pinned else 0, article_id))
+        _get_conn().commit()
+
+
+def articles_in_period(period_start: str, period_end: str) -> list[dict]:
+    """All articles from daily newsletters whose date falls within [period_start, period_end]."""
+    rows = _get_conn().execute(
+        """SELECT a.* FROM articles a
+           JOIN newsletters n ON n.id = a.newsletter_id
+           WHERE n.kind='daily' AND n.date >= ? AND n.date <= ?
+           ORDER BY n.date DESC, a.relevance_score DESC""",
+        (period_start, period_end),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Digest articles (weekly / monthly join) ───────────────────────────────────
+
+def digest_article_list(digest_id: int) -> list[dict]:
+    """Articles in a digest, in display order. Each row carries the article fields plus
+    digest-specific position/included from the join table."""
+    rows = _get_conn().execute(
+        """SELECT a.*, da.position AS d_position, da.included AS d_included,
+                  n.date AS source_date
+           FROM digest_articles da
+           JOIN articles a ON a.id = da.article_id
+           JOIN newsletters n ON n.id = a.newsletter_id
+           WHERE da.digest_id = ?
+           ORDER BY da.position ASC""",
+        (digest_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Overlay the digest's position/included onto the article view used by the renderer
+        d["position"] = d.pop("d_position")
+        d["included"] = d.pop("d_included")
+        out.append(d)
+    return out
+
+
+def digest_article_add(digest_id: int, article_id: int, position: int = 0, included: int = 1):
+    with _lock:
+        _get_conn().execute(
+            """INSERT OR IGNORE INTO digest_articles(digest_id, article_id, position, included)
+               VALUES (?,?,?,?)""",
+            (digest_id, article_id, position, included),
+        )
+        _get_conn().commit()
+
+
+def digest_article_remove(digest_id: int, article_id: int):
+    with _lock:
+        _get_conn().execute(
+            "DELETE FROM digest_articles WHERE digest_id=? AND article_id=?",
+            (digest_id, article_id),
+        )
+        _get_conn().commit()
+
+
+def digest_article_toggle(digest_id: int, article_id: int):
+    """Flip included 0↔1 for one article in a digest."""
+    row = _get_conn().execute(
+        "SELECT included FROM digest_articles WHERE digest_id=? AND article_id=?",
+        (digest_id, article_id),
+    ).fetchone()
+    if not row:
+        return
+    with _lock:
+        _get_conn().execute(
+            "UPDATE digest_articles SET included=? WHERE digest_id=? AND article_id=?",
+            (0 if row[0] else 1, digest_id, article_id),
+        )
+        _get_conn().commit()
+
+
+def digest_article_reorder(digest_id: int, ordered_ids: list[int]):
+    with _lock:
+        for pos, aid in enumerate(ordered_ids):
+            _get_conn().execute(
+                "UPDATE digest_articles SET position=? WHERE digest_id=? AND article_id=?",
+                (pos, digest_id, aid),
+            )
+        _get_conn().commit()
+
+
+def digest_article_count(digest_id: int) -> int:
+    row = _get_conn().execute(
+        "SELECT COUNT(*) FROM digest_articles WHERE digest_id=?", (digest_id,)
+    ).fetchone()
+    return row[0] if row else 0
+
+
+def digest_seed(digest_id: int, kind: str, period_start: str, period_end: str, top_n: int):
+    """Populate digest_articles for a fresh digest:
+       1. every article pinned for this period (included=1)
+       2. then top-N-by-relevance from remaining curated daily articles, until reaching top_n total
+    """
+    if kind not in ("weekly", "monthly"):
+        raise ValueError(f"digest_seed: bad kind {kind!r}")
+    pin_col = "pin_weekly" if kind == "weekly" else "pin_monthly"
+
+    pool = articles_in_period(period_start, period_end)
+    # Daily curator's `included` flag means "in the daily newsletter"; we use it as a
+    # quality gate (curator already vetted these). Pinned articles bypass the gate.
+    pinned = [a for a in pool if a.get(pin_col, 0)]
+    pinned_ids = {a["id"] for a in pinned}
+    candidates = [a for a in pool
+                  if a["id"] not in pinned_ids
+                  and a.get("included", 1)]
+    candidates.sort(key=lambda a: a.get("relevance_score", 0), reverse=True)
+
+    # Pinned first (position by source date desc — matches the SQL ORDER), then top-N fillers
+    selected = list(pinned) + candidates[: max(0, top_n - len(pinned))]
+
+    with _lock:
+        conn = _get_conn()
+        # `with conn:` runs the block inside an implicit transaction, committing
+        # on clean exit and rolling back on any exception. Without this, a crash
+        # mid-loop leaves the digest half-populated — the count is non-zero so
+        # the next visit skips re-seeding, and the user sees a partial digest
+        # indefinitely.
+        with conn:
+            conn.execute("DELETE FROM digest_articles WHERE digest_id=?", (digest_id,))
+            for pos, a in enumerate(selected):
+                conn.execute(
+                    "INSERT INTO digest_articles(digest_id, article_id, position, included) "
+                    "VALUES (?,?,?,1)",
+                    (digest_id, a["id"], pos),
+                )
+
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 def prompt_list(type_filter: str | None = None) -> list[dict]:
@@ -609,10 +1025,11 @@ def subscriber_list() -> list[dict]:
 
 
 def subscriber_create(email: str, name: str = "") -> dict | None:
+    """Admin-side direct create — bypasses double-opt-in since the admin is trusted."""
     try:
         with _lock:
             cur = _get_conn().execute(
-                "INSERT INTO subscribers(email, name, unsubscribe_token) VALUES(?,?,?)",
+                "INSERT INTO subscribers(email, name, confirmed, unsubscribe_token) VALUES(?,?,1,?)",
                 (email, name, str(uuid.uuid4())),
             )
             _get_conn().commit()
@@ -624,10 +1041,12 @@ def subscriber_create(email: str, name: str = "") -> dict | None:
 def subscriber_update(id: int, **kwargs):
     if not kwargs:
         return
-    allowed = {"active", "name"}
+    allowed = {"active", "name", "cadence"}
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"subscriber_update: disallowed columns {bad}")
+    if "cadence" in kwargs and kwargs["cadence"] not in ("daily", "weekly", "monthly"):
+        raise ValueError(f"subscriber_update: bad cadence {kwargs['cadence']!r}")
     fields = ", ".join(f"{k}=?" for k in kwargs)
     with _lock:
         _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])
@@ -640,10 +1059,15 @@ def subscriber_delete(id: int):
         _get_conn().commit()
 
 
-def subscriber_active() -> list[dict]:
-    return [dict(r) for r in _get_conn().execute(
-        "SELECT * FROM subscribers WHERE active=1"
-    ).fetchall()]
+def subscriber_active(cadence: str | None = None) -> list[dict]:
+    """Active subscribers, optionally filtered to a single cadence."""
+    if cadence is None:
+        rows = _get_conn().execute("SELECT * FROM subscribers WHERE active=1").fetchall()
+    else:
+        rows = _get_conn().execute(
+            "SELECT * FROM subscribers WHERE active=1 AND cadence=?", (cadence,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def subscriber_get_by_token(token: str) -> dict | None:
@@ -659,6 +1083,64 @@ def subscriber_unsubscribe_by_token(token: str):
             "UPDATE subscribers SET active=0 WHERE unsubscribe_token=?", (token,)
         )
         _get_conn().commit()
+
+
+def subscriber_get_by_email(email: str) -> dict | None:
+    row = _get_conn().execute(
+        "SELECT * FROM subscribers WHERE email=?", (email.lower(),)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def subscriber_create_pending(email: str, cadence: str, confirm_token: str) -> dict | None:
+    """Insert a new subscriber in the pending state (active=0, confirmed=0). Returns the row,
+    or None on email-uniqueness conflict — callers should check subscriber_get_by_email first."""
+    if cadence not in ("daily", "weekly", "monthly"):
+        raise ValueError(f"subscriber_create_pending: bad cadence {cadence!r}")
+    try:
+        with _lock:
+            cur = _get_conn().execute(
+                """INSERT INTO subscribers
+                   (email, name, active, cadence, confirmed, confirm_token, unsubscribe_token)
+                   VALUES (?, '', 0, ?, 0, ?, ?)""",
+                (email.lower(), cadence, confirm_token, str(uuid.uuid4())),
+            )
+            _get_conn().commit()
+        return dict(_get_conn().execute(
+            "SELECT * FROM subscribers WHERE id=?", (cur.lastrowid,)
+        ).fetchone())
+    except Exception:
+        return None
+
+
+def subscriber_set_confirm_token(id: int, token: str | None):
+    """Rotate (or clear) the confirm token for a subscriber row."""
+    with _lock:
+        _get_conn().execute(
+            "UPDATE subscribers SET confirm_token=? WHERE id=?", (token, id)
+        )
+        _get_conn().commit()
+
+
+def subscriber_confirm(token: str) -> dict | None:
+    """Mark a subscriber confirmed via their single-use confirm token. Returns the row
+    on success, None if the token is unknown / already used."""
+    if not token:
+        return None
+    row = _get_conn().execute(
+        "SELECT * FROM subscribers WHERE confirm_token=?", (token,)
+    ).fetchone()
+    if not row:
+        return None
+    with _lock:
+        _get_conn().execute(
+            "UPDATE subscribers SET confirmed=1, active=1, confirm_token=NULL WHERE id=?",
+            (row["id"],),
+        )
+        _get_conn().commit()
+    return dict(_get_conn().execute(
+        "SELECT * FROM subscribers WHERE id=?", (row["id"],)
+    ).fetchone())
 
 
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────

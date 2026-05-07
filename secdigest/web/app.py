@@ -11,7 +11,7 @@ from secdigest import config, db
 from secdigest.web import auth, templates
 from secdigest.web.auth import is_authed, verify_password, ensure_default_password
 from secdigest.web.csrf import verify_csrf
-from secdigest.web.routes import newsletter, prompts, subscribers, settings, email_templates_route, unsubscribe, feeds
+from secdigest.web.routes import newsletter, prompts, subscribers, settings, email_templates_route, unsubscribe, feeds, digest
 from secdigest.web.security import login_allowed, login_record_failure, login_clear
 import secdigest.scheduler as sched
 
@@ -76,6 +76,7 @@ app.include_router(settings.router)
 app.include_router(email_templates_route.router)
 app.include_router(unsubscribe.router)
 app.include_router(feeds.router)
+app.include_router(digest.router)
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────────

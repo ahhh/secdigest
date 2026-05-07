@@ -139,6 +139,24 @@
       </form>
     </div>
 
+    <!-- Send test email -->
+    <div class="builder-section">
+      <div class="section-label" style="margin-bottom:8px;">Send Test</div>
+      <form action="/day/{{ date_str }}/send-test" method="post">
+        {{ csrf_input(request) }}
+        <div class="form-group" style="margin-bottom:8px;">
+          <input type="email" name="test_recipient" class="input" required
+                 placeholder="you@example.com" autocomplete="email">
+        </div>
+        <button type="submit" class="btn btn-outline btn-sm" style="width:100%">
+          &#x2709; Send Test Email
+        </button>
+      </form>
+      <p class="text-muted" style="font-size:.75em;margin-top:8px;line-height:1.4;">
+        One copy to that address using the current template, subject, and articles.
+      </p>
+    </div>
+
     <!-- Inline template editor -->
     <div class="builder-section">
       <button class="btn btn-ghost btn-sm" style="width:100%;justify-content:space-between"
@@ -219,7 +237,7 @@
 
 <script>
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
-const dateStr = '{{ date_str }}';
+const dateStr = {{ date_str | tojson }};
 let currentTemplateId = {{ active_template_id or 'null' }};
 let currentTemplateData = {};
 
@@ -342,17 +360,21 @@ function appendFields(form, fields) {
          data-id="{{ a.id }}">
       <div class="article-drag-handle">&#x28BF;</div>
       <div class="article-body">
+        {% set src_label = ('Hacker News' if a.source == 'hn'
+                              else ('Manual' if a.source == 'manual'
+                                    else (a.source_name or 'RSS feed'))) %}
         <div class="article-meta">
           <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
-          {% if a.hn_id %}
+          {% if a.source == 'hn' and a.hn_id %}
           <span class="hn-score">HN {{ a.hn_score }}</span>
           <span class="hn-comments">{{ a.hn_comments }} comments</span>
+          {% elif a.source == 'rss' %}
+          <span class="text-muted" style="font-size:0.9em;">{{ a.source_name or 'RSS' }}</span>
           {% else %}
           <span class="text-muted" style="font-style:italic;font-size:0.95em;">editorial note</span>
           {% endif %}
-          {% if a.relevance_reason %}
-          <span class="relevance-reason" title="{{ a.relevance_reason }}">&#x24D8;</span>
-          {% endif %}
+          <span class="relevance-reason"
+                title="Source: {{ src_label }}{% if a.relevance_reason %} — {{ a.relevance_reason }}{% endif %}">&#x24D8;</span>
         </div>
 
         {% if a.url or a.hn_url %}
@@ -397,6 +419,20 @@ function appendFields(form, fields) {
               {% if a.included %}&#x2715; Exclude{% else %}+ Include{% endif %}
             </button>
           </form>
+          <form action="/day/{{ date_str }}/article/{{ a.id }}/pin/weekly" method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm {% if a.pin_weekly %}btn-primary{% else %}btn-ghost{% endif %}"
+                    title="{% if a.pin_weekly %}Pinned to weekly digest — click to unpin{% else %}Pin this article to the weekly digest{% endif %}">
+              {% if a.pin_weekly %}&#x2713; Weekly{% else %}&#x29C9; Pin weekly{% endif %}
+            </button>
+          </form>
+          <form action="/day/{{ date_str }}/article/{{ a.id }}/pin/monthly" method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm {% if a.pin_monthly %}btn-primary{% else %}btn-ghost{% endif %}"
+                    title="{% if a.pin_monthly %}Pinned to monthly digest — click to unpin{% else %}Pin this article to the monthly digest{% endif %}">
+              {% if a.pin_monthly %}&#x2713; Monthly{% else %}&#x29C9; Pin monthly{% endif %}
+            </button>
+          </form>
         </div>
       </div>
     </div>
@@ -408,7 +444,7 @@ function appendFields(form, fields) {
 
 <script>
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
-const dateStr = '{{ date_str }}';
+const dateStr = {{ date_str | tojson }};
 
 function toggleAddArticle() {
   const panel = document.getElementById('add-article-panel');

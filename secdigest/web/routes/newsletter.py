@@ -1,11 +1,16 @@
 """Routes: newsletter day view, archive, fetch, summarize, send, article actions."""
 import asyncio
+import re
 from datetime import date as dt_date
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from secdigest import db, fetcher, summarizer, mailer
+# Strict canonical ISO date — Python 3.11+'s date.fromisoformat() accepts
+# compact "YYYYMMDD", which we don't want reaching the JS-context renders.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+from secdigest import db, fetcher, summarizer, mailer, periods
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
 from secdigest.web.csrf import verify_csrf
@@ -15,6 +20,24 @@ router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 def _today() -> str:
     return dt_date.today().isoformat()
+
+
+def _validate_date(date_str: str) -> str:
+    """Reject anything that isn't a real ISO YYYY-MM-DD before letting it reach
+    a template. Path params are dropped into JS contexts in day.html / digest.html;
+    Jinja autoescape doesn't cover JS, so we backstop with `|tojson` in the
+    template AND a regex check at the route boundary for defence-in-depth.
+
+    Two checks: the regex enforces canonical YYYY-MM-DD format (Python 3.11+'s
+    fromisoformat now accepts compact YYYYMMDD, which we don't want), and the
+    fromisoformat call rejects impossible calendar dates like 2026-13-40."""
+    if not _ISO_DATE_RE.match(date_str):
+        raise HTTPException(status_code=404, detail="Bad date")
+    try:
+        dt_date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Bad date")
+    return date_str
 
 
 # ── Home ──────────────────────────────────────────────────────────────────────
@@ -32,15 +55,55 @@ async def index(request: Request):
 async def archive(request: Request):
     if not is_authed(request):
         return redirect_login()
-    newsletters = db.newsletter_list()
-    counts = {
-        n["id"]: sum(1 for a in db.article_list(n["id"]) if a.get("included", 1))
-        for n in newsletters
-    }
+    dailies = db.newsletter_list(limit=365, kind="daily")
+    weeklies = {n["period_start"]: n for n in db.newsletter_list(limit=365, kind="weekly")}
+    monthlies = {n["period_start"]: n for n in db.newsletter_list(limit=120, kind="monthly")}
+
+    daily_counts = {n["id"]: db.article_count(n["id"]) for n in dailies}
+    weekly_counts = {n["id"]: db.digest_article_count(n["id"]) for n in weeklies.values()}
+    monthly_counts = {n["id"]: db.digest_article_count(n["id"]) for n in monthlies.values()}
+
+    # Group dailies into Month → Week → [Day] in newest-first order, while preserving
+    # encounter order so the template can render without re-sorting.
+    months: list[dict] = []
+    months_by_first: dict[str, dict] = {}
+    weeks_by_monday: dict[str, dict] = {}
+
+    for n in dailies:
+        month_first, _ = periods.month_bounds(n["date"])
+        monday, sunday = periods.iso_week_bounds(n["date"])
+
+        m = months_by_first.get(month_first)
+        if not m:
+            m = {
+                "label": periods.month_label(n["date"]),
+                "first": month_first,
+                "monthly_digest": monthlies.get(month_first),
+                "weeks": [],
+            }
+            months_by_first[month_first] = m
+            months.append(m)
+
+        w = weeks_by_monday.get(monday)
+        if not w:
+            w = {
+                "label": f"Week of {monday}",
+                "monday": monday,
+                "sunday": sunday,
+                "weekly_digest": weeklies.get(monday),
+                "days": [],
+            }
+            weeks_by_monday[monday] = w
+            m["weeks"].append(w)
+
+        w["days"].append(n)
+
     return templates.TemplateResponse("archive.html", {
         "request": request,
-        "newsletters": newsletters,
-        "counts": counts,
+        "months": months,
+        "daily_counts": daily_counts,
+        "weekly_counts": weekly_counts,
+        "monthly_counts": monthly_counts,
     })
 
 
@@ -50,6 +113,7 @@ async def archive(request: Request):
 async def day_view(request: Request, date_str: str):
     if not is_authed(request):
         return redirect_login()
+    _validate_date(date_str)
     newsletter = db.newsletter_get(date_str)
     articles = db.article_list(newsletter["id"]) if newsletter else []
     view = request.query_params.get("view", "curator")
@@ -157,6 +221,19 @@ async def day_send(request: Request, date_str: str):
     )
 
 
+@router.post("/day/{date_str}/send-test")
+async def day_send_test(request: Request, date_str: str,
+                        test_recipient: str = Form(...)):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    ok, msg = mailer.send_test_email(date_str, test_recipient)
+    status = "ok" if ok else "error"
+    return RedirectResponse(
+        f"/day/{date_str}?view=builder&msg={msg.replace(' ', '+')}&status={status}",
+        status_code=302,
+    )
+
+
 @router.get("/day/{date_str}/pool", response_class=HTMLResponse)
 async def day_pool(request: Request, date_str: str):
     if not is_authed(request):
@@ -259,6 +336,41 @@ async def toggle_article(request: Request, date_str: str, article_id: int):
     article = db.article_get(article_id)
     if article:
         db.article_update(article_id, included=0 if article["included"] else 1)
+    return RedirectResponse(f"/day/{date_str}", status_code=302)
+
+
+@router.post("/day/{date_str}/article/{article_id}/pin/{period}")
+async def pin_article(request: Request, date_str: str, article_id: int, period: str):
+    """Toggle pin_weekly or pin_monthly on a daily article.
+    Side effect: if a digest for the article's period already exists, the article is
+    added (or removed, when unpinning) so the digest stays in sync without re-seeding."""
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    if period not in ("weekly", "monthly"):
+        return RedirectResponse(f"/day/{date_str}?msg=Bad+period&status=error", status_code=302)
+    article = db.article_get(article_id)
+    if not article:
+        return RedirectResponse(f"/day/{date_str}", status_code=302)
+
+    pin_col = f"pin_{period}"
+    new_pinned = not bool(article.get(pin_col, 0))
+    db.article_set_pin(article_id, period, new_pinned)
+
+    # Find the source daily's date so we can locate the matching digest window
+    source = db.newsletter_get(date_str)
+    if source:
+        if period == "weekly":
+            p_start, p_end = periods.iso_week_bounds(source["date"])
+        else:
+            p_start, p_end = periods.month_bounds(source["date"])
+        digest = db.newsletter_get(p_start, kind=period)
+        if digest:
+            if new_pinned:
+                # Append at end so the curator's manual ordering stays intact
+                count = db.digest_article_count(digest["id"])
+                db.digest_article_add(digest["id"], article_id, position=count, included=1)
+            else:
+                db.digest_article_remove(digest["id"], article_id)
     return RedirectResponse(f"/day/{date_str}", status_code=302)
 
 

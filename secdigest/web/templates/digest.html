@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}SecDigest — {{ kind_label }} {{ period_start }}{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <div>
+    <h1 class="page-title">
+      {{ kind_label }} digest
+      <span class="badge badge-blue">{{ period_start }} → {{ period_end }}</span>
+      {% if digest %}
+        <span class="badge badge-{{ 'blue' if digest.status == 'sent' else 'gray' }}">
+          {{ digest.status }}
+        </span>
+      {% endif %}
+    </h1>
+    <p class="page-sub">{{ articles | selectattr('included') | list | length }} articles included
+      {% if articles %} · {{ articles | length }} total{% endif %}
+    </p>
+  </div>
+  <div class="btn-group">
+    {% if view == 'curator' %}
+    <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/auto-select" method="post"
+          style="display:inline" onsubmit="return confirm('Re-seed digest from pinned + top relevance? This overwrites manual ordering.')">
+      {{ csrf_input(request) }}
+      <button class="btn btn-outline">&#x21BA; Refresh selection</button>
+    </form>
+    {% if articles and articles | selectattr('included') | list | length %}
+    <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/send" method="post"
+          style="display:inline" onsubmit="return confirm('Send to all active {{ kind }} subscribers?')">
+      {{ csrf_input(request) }}
+      <button class="btn btn-primary">&#x2709; Send {{ kind_label }}</button>
+    </form>
+    {% endif %}
+    {% else %}
+    <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/send" method="post"
+          style="display:inline" onsubmit="return confirm('Send to all active {{ kind }} subscribers?')">
+      {{ csrf_input(request) }}
+      <button class="btn btn-primary">&#x2709; Send {{ kind_label }}</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if request.query_params.get('msg') %}
+<div class="flash flash-{{ request.query_params.get('status', 'info') }}">
+  {{ request.query_params.get('msg') }}
+</div>
+{% endif %}
+
+<!-- View mode toggle -->
+<div class="view-toggle">
+  <a href="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}"
+     class="view-toggle-btn {% if view == 'curator' %}active{% endif %}">
+    &#x270E; Curator
+  </a>
+  <a href="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}?view=builder"
+     class="view-toggle-btn {% if view == 'builder' %}active-builder{% endif %}">
+    &#x2709; Email Builder
+  </a>
+</div>
+
+{% if view == 'builder' %}
+
+<div class="builder-layout">
+  <div class="builder-sidebar">
+    <div class="builder-section">
+      <div class="section-label" style="margin-bottom:8px;">Template</div>
+      <select class="input" id="tmpl-select" onchange="selectTemplate(parseInt(this.value))">
+        {% for t in email_templates %}
+        <option value="{{ t.id }}" {% if t.id == active_template_id %}selected{% endif %}>
+          {{ t.name }}{% if t.is_builtin %} (built-in){% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="builder-section">
+      <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/set-template" method="post">
+        {{ csrf_input(request) }}
+        <input type="hidden" name="template_id" id="tmpl-form-id" value="{{ active_template_id or '' }}">
+        <div class="form-group">
+          <label class="label">Subject line</label>
+          <input type="text" name="subject" id="tmpl-subject" class="input"
+                 value="{{ active_subject }}"
+                 placeholder="SecDigest {{ kind_label }} — {{ period_start }}">
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="checkbox-label">
+            <input type="checkbox" name="include_toc" id="toc-toggle" value="1"
+                   {% if active_toc %}checked{% endif %}
+                   onchange="reloadPreview()">
+            Include table of contents
+          </label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm" style="width:100%">
+          &#x2713; Apply &amp; Save
+        </button>
+      </form>
+    </div>
+
+    <div class="builder-section">
+      <div class="section-label" style="margin-bottom:8px;">Send Test</div>
+      <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/send-test" method="post">
+        {{ csrf_input(request) }}
+        <div class="form-group" style="margin-bottom:8px;">
+          <input type="email" name="test_recipient" class="input" required
+                 placeholder="you@example.com" autocomplete="email">
+        </div>
+        <button type="submit" class="btn btn-outline btn-sm" style="width:100%">
+          &#x2709; Send Test Email
+        </button>
+      </form>
+    </div>
+
+    <a href="/email-templates" class="btn btn-ghost btn-sm" style="width:100%">
+      &#x2699; Manage All Templates
+    </a>
+  </div>
+
+  <div class="builder-preview">
+    <div class="builder-preview-header">
+      <span class="text-muted" style="font-size:.85em;">Preview</span>
+      <button class="btn btn-ghost btn-sm" onclick="reloadPreview()">&#x21BA; Refresh</button>
+    </div>
+    <iframe id="email-preview"
+            src="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}"
+            class="preview-frame"
+            sandbox="allow-same-origin"
+            frameborder="0"
+            title="Email preview"></iframe>
+  </div>
+</div>
+
+<script>
+const dateStr = {{ date_str | tojson }};
+const baseUrl = {{ ("/week/" if kind == "weekly" else "/month/") | tojson }} + dateStr;
+let currentTemplateId = {{ active_template_id or 'null' }};
+function selectTemplate(id) {
+  document.getElementById('tmpl-form-id').value = id;
+  currentTemplateId = id;
+  reloadPreview();
+}
+function reloadPreview() {
+  const toc = document.getElementById('toc-toggle') && document.getElementById('toc-toggle').checked ? '1' : '0';
+  document.getElementById('email-preview').src =
+    baseUrl + '/preview?template_id=' + (currentTemplateId || '') + '&include_toc=' + toc;
+}
+</script>
+
+{% else %}
+
+{% if not articles %}
+<div class="empty-state">
+  <div class="empty-icon">◎</div>
+  <p>No articles in this digest yet.</p>
+  <p class="text-muted">Daily articles in this period get auto-pulled — pin some on the day pages, or click <em>Refresh selection</em> to re-seed by relevance.</p>
+</div>
+{% else %}
+
+<form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/reorder" method="post" id="reorder-form">
+  {{ csrf_input(request) }}
+  <div id="article-list" class="article-list">
+    {% for a in articles %}
+    <input type="hidden" name="order" value="{{ a.id }}" class="order-input" data-id="{{ a.id }}">
+    <div class="article-card {% if not a.included %}article-excluded{% endif %}" data-id="{{ a.id }}">
+      <div class="article-drag-handle">&#x28BF;</div>
+      <div class="article-body">
+        <div class="article-meta">
+          <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
+          <span class="text-muted mono" style="font-size:.85em;">from {{ a.source_date }}</span>
+          {% if kind == 'weekly' and a.pin_weekly %}
+          <span class="badge badge-blue" style="font-size:.7em;">pinned</span>
+          {% elif kind == 'monthly' and a.pin_monthly %}
+          <span class="badge badge-blue" style="font-size:.7em;">pinned</span>
+          {% endif %}
+        </div>
+
+        {% if a.url or a.hn_url %}
+        <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">{{ a.title }}</a>
+        {% else %}
+        <span class="article-title" style="cursor:default;">{{ a.title }}</span>
+        {% endif %}
+
+        <div class="summary-section">
+          {% if a.summary %}
+          <p class="summary-text">{{ a.summary }}</p>
+          {% else %}
+          <p class="summary-placeholder">No summary on the source article.</p>
+          {% endif %}
+        </div>
+
+        <div class="article-actions">
+          <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/article/{{ a.id }}/toggle"
+                method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
+              {% if a.included %}Exclude{% else %}Include{% endif %}
+            </button>
+          </form>
+          <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/article/{{ a.id }}/remove"
+                method="post" style="display:inline"
+                onsubmit="return confirm('Remove this article from the digest? Pin it on its day page to keep it.')">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm btn-ghost btn-danger">&#x2716; Remove</button>
+          </form>
+          <a href="/day/{{ a.source_date }}" class="btn btn-sm btn-ghost">&#x2192; source day</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</form>
+
+<script>
+(function () {
+  const list = document.getElementById('article-list');
+  if (!list || typeof Sortable === 'undefined') return;
+  Sortable.create(list, {
+    handle: '.article-drag-handle',
+    animation: 120,
+    onEnd: () => {
+      // Sort the hidden order inputs to match DOM order, then submit
+      const cards = list.querySelectorAll('.article-card');
+      const ids = Array.from(cards).map(c => c.dataset.id);
+      const inputs = list.querySelectorAll('.order-input');
+      ids.forEach((id, i) => { inputs[i].value = id; });
+      document.getElementById('reorder-form').submit();
+    }
+  });
+})();
+</script>
+
+{% endif %}
+{% endif %}
+
+{% endblock %}

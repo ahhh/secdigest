@@ -63,8 +63,10 @@ def fetch_all_rss() -> list[dict]:
     all_articles = []
     for feed in feeds:
         articles = fetch_feed(feed['url'], feed.get('max_articles', 5))
+        feed_label = feed.get('name') or feed['url']
         for a in articles:
-            a.update({'id': None, 'score': 0, 'comments': 0, 'source': 'rss'})
+            a.update({'id': None, 'score': 0, 'comments': 0,
+                      'source': 'rss', 'source_name': feed_label})
         all_articles.extend(articles)
-        print(f"[rss] {feed.get('name') or feed['url']}: {len(articles)} articles")
+        print(f"[rss] {feed_label}: {len(articles)} articles")
     return all_articles

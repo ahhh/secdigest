@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>secdigest // signal from the wire</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <span class="prompt">&gt;</span>
+    <span class="brand">secdigest<span class="cursor">_</span></span>
+    <span class="topbar-meta">// 0xSECD // active feed</span>
+  </header>
+
+  <main class="hero">
+    <h1 class="glitch" data-text="signal from the wire.">signal from the wire.</h1>
+
+    <p class="lead">
+      we pull security stories from the corners of the internet,
+      score them for what actually matters, and ship the good stuff to your inbox.
+      no listicles. no thinkpieces. just the wire.
+    </p>
+
+    {% if message %}
+    <div class="flash flash-{{ status }}">
+      <span class="flash-prefix">[ {{ status }} ]</span> {{ message }}
+    </div>
+    {% endif %}
+
+    <section class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-title">// subscribe</span>
+      </div>
+
+      <form action="/subscribe" method="post" class="subscribe-form">
+        <label class="field">
+          <span class="field-label">&gt; email</span>
+          <input type="email" name="email" placeholder="you@somewhere.net"
+                 required autocomplete="email" autofocus>
+        </label>
+
+        <fieldset class="cadence-group">
+          <legend>&gt; frequency</legend>
+
+          <label class="radio">
+            <input type="radio" name="cadence" value="daily" checked>
+            <span class="radio-marker"></span>
+            <span class="radio-text">
+              <strong>daily</strong>
+              <em>every weekday morning. what hit overnight.</em>
+            </span>
+          </label>
+
+          <label class="radio">
+            <input type="radio" name="cadence" value="weekly">
+            <span class="radio-marker"></span>
+            <span class="radio-text">
+              <strong>weekly</strong>
+              <em>top 10 of the week. lands monday.</em>
+            </span>
+          </label>
+
+          <label class="radio">
+            <input type="radio" name="cadence" value="monthly">
+            <span class="radio-marker"></span>
+            <span class="radio-text">
+              <strong>monthly</strong>
+              <em>the month's highlights. on the 1st.</em>
+            </span>
+          </label>
+        </fieldset>
+
+        <!-- honeypot — invisible to humans, irresistible to bots -->
+        <div class="hp" aria-hidden="true">
+          <label>Website (leave blank)
+            <input type="text" name="website" tabindex="-1" autocomplete="off">
+          </label>
+        </div>
+
+        <button type="submit" class="btn">&gt;&gt; subscribe</button>
+
+        <p class="fineprint">
+          we'll send a confirm link first &mdash; click it and you're in.
+          unsubscribe whenever, link's in every email.
+        </p>
+      </form>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span class="footer-line">// secdigest &middot; self-hosted &middot; the wire never sleeps</span>
+  </footer>
+</body>
+</html>
