@@ -85,7 +85,9 @@ async def test_subscribe_creates_pending_row_and_sends_email(
     r = await _post(app, "/subscribe",
                     {"email": "alice@test.example", "cadence": "weekly", "website": ""})
     assert r.status_code == 200
-    assert "Check your inbox" in r.text
+    # The cyberpunk theme uses lowercase copy throughout; match case-insensitively
+    # so a future style swap doesn't quietly break the test.
+    assert "check your inbox" in r.text.lower()
 
     sub = db.subscriber_get_by_email("alice@test.example")
     assert sub is not None

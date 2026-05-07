@@ -31,11 +31,38 @@ from secdigest import config
 
 @pytest.fixture
 def tmp_db(monkeypatch, tmp_path):
-    """Redirect all DB operations to a throwaway SQLite file for the duration of the test."""
+    """Redirect all DB operations to a throwaway SQLite file for the test.
+
+    Also defangs env vars that would otherwise leak from the user's .env file
+    into the test database via init_db's seed_config:
+
+      • PASSWORD_HASH — if your real .env carries a production hash, init_db
+        seeds the test DB with it, ensure_default_password no-ops because the
+        hash is "set", and any test that logs in with the default password
+        ("secdigest") fails because the hash is for a different password.
+      • Anthropic / SMTP creds aren't read at seed time so they're harmless
+        here — the stub fixtures handle them at call time.
+
+    After the schema is initialised we explicitly clear password_hash and call
+    ensure_default_password() so tests can rely on a known-good login.
+    """
+    monkeypatch.setenv("PASSWORD_HASH", "")
+    monkeypatch.setattr(config, "DEFAULT_PASSWORD_HASH", "")
+    monkeypatch.setitem(config.DB_CONFIG_DEFAULTS, "password_hash", "")
+
     db_path = str(tmp_path / "test.db")
     monkeypatch.setattr(config, "DB_PATH", db_path)
     db_module._conn = None
     db_module.init_db()
+
+    # Belt-and-suspenders: regardless of whatever leaked through, force the
+    # password hash to be the bcrypt of "secdigest" so default-password tests
+    # have a known starting state. ensure_default_password is idempotent — it
+    # only writes when the current hash is falsy.
+    db_module.cfg_set("password_hash", "")
+    from secdigest.web.auth import ensure_default_password
+    ensure_default_password()
+
     yield db_path
     if db_module._conn:
         db_module._conn.close()

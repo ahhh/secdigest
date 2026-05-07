@@ -126,18 +126,29 @@ async def test_full_pipeline_end_to_end(
     db.cfg_set("password_hash", hash_password("testpw"))
 
     from secdigest.web.app import app as admin_app
+
+    def _check_redirect(resp, expected_url_substring: str):
+        """Helper: status assertion with the URL + response body included so a
+        404 or 401 surfaces with enough context to diagnose immediately."""
+        if resp.status_code != 302:
+            raise AssertionError(
+                f"expected 302 at {expected_url_substring}, got {resp.status_code}\n"
+                f"location: {resp.headers.get('location')}\n"
+                f"body: {resp.text[:400]}"
+            )
+
     async with AsyncClient(transport=ASGITransport(app=admin_app),
                            base_url="http://test", follow_redirects=False) as admin:
         r = await admin.post("/login", data={"password": "testpw"})
-        assert r.status_code == 302
+        _check_redirect(r, "POST /login")
 
         # Pin two top articles to the weekly digest via the day curator
         top_two = sorted(refreshed, key=lambda a: a["relevance_score"], reverse=True)[:2]
         tok = await get_csrf(admin, "/day/2026-05-04")
         for a in top_two:
-            r = await admin.post(f"/day/2026-05-04/article/{a['id']}/pin/weekly",
-                                 data={"csrf_token": tok})
-            assert r.status_code == 302
+            url = f"/day/2026-05-04/article/{a['id']}/pin/weekly"
+            r = await admin.post(url, data={"csrf_token": tok})
+            _check_redirect(r, f"POST {url}")
         # Confirm pin flag persisted
         for a in top_two:
             assert db.article_get(a["id"])["pin_weekly"] == 1
@@ -145,9 +156,9 @@ async def test_full_pipeline_end_to_end(
 
         # Toggle one article off the daily newsletter
         toggled = articles[-1]
-        r = await admin.post(f"/day/2026-05-04/article/{toggled['id']}/toggle",
-                             data={"csrf_token": tok})
-        assert r.status_code == 302
+        url = f"/day/2026-05-04/article/{toggled['id']}/toggle"
+        r = await admin.post(url, data={"csrf_token": tok})
+        _check_redirect(r, f"POST {url}")
         assert db.article_get(toggled["id"])["included"] == 0
         print("  toggled one article off")
 
@@ -162,7 +173,7 @@ async def test_full_pipeline_end_to_end(
         # ── 5. Send the daily newsletter ─────────────────────────────────────
         full_stubs.smtp.clear()
         r = await admin.post("/day/2026-05-04/send", data={"csrf_token": tok})
-        assert r.status_code == 302
+        _check_redirect(r, "POST /day/2026-05-04/send")
         # Only the daily-cadence subscriber should be addressed
         daily_recipients = [m["to"] for m in full_stubs.smtp]
         assert any("daily-reader@test.invalid" in r for r in daily_recipients), \
@@ -186,14 +197,14 @@ async def test_full_pipeline_end_to_end(
         # Send-test from the digest builder (single recipient, no cadence filter)
         r = await admin.post("/week/2026-05-04/send-test",
                              data={"csrf_token": tok, "test_recipient": "qa@test.invalid"})
-        assert r.status_code == 302
+        _check_redirect(r, "POST /week/2026-05-04/send-test")
         assert any("qa@test.invalid" in m["to"] for m in full_stubs.smtp)
         print("  weekly send-test reached qa@")
 
         # Production weekly send
         full_stubs.smtp.clear()
         r = await admin.post("/week/2026-05-04/send", data={"csrf_token": tok})
-        assert r.status_code == 302
+        _check_redirect(r, "POST /week/2026-05-04/send")
         weekly_recipients = [m["to"] for m in full_stubs.smtp]
         assert any("weekly-reader@test.invalid" in r for r in weekly_recipients)
         assert not any("daily-reader@test.invalid" in r for r in weekly_recipients)
@@ -211,7 +222,7 @@ async def test_full_pipeline_end_to_end(
                 "website": "",
             })
             assert r.status_code == 200
-            assert "Check your inbox" in r.text
+            assert "check your inbox" in r.text.lower()
             assert len(full_stubs.smtp) == 1, "confirmation email not sent"
             confirm_url = re.search(
                 r"http://public\.test/confirm/[\w-]+",
@@ -242,7 +253,7 @@ async def test_full_pipeline_end_to_end(
         # ── 10. Resend the daily — unsubscribed user must not appear ─────────
         full_stubs.smtp.clear()
         r = await admin.post("/day/2026-05-04/send", data={"csrf_token": tok})
-        assert r.status_code == 302
+        _check_redirect(r, "POST /day/2026-05-04/send (post-unsubscribe)")
         post_unsub_recipients = [m["to"] for m in full_stubs.smtp]
         assert not any("new-signup@test.invalid" in r for r in post_unsub_recipients), \
             "unsubscribed user resurfaced in next send"
