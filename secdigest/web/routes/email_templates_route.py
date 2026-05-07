@@ -38,10 +38,12 @@ async def create_template(
     subject: str = Form("SecDigest — {date}"),
     html: str = Form(...),
     article_html: str = Form(...),
+    header_html: str = Form(""),
 ):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    db.email_template_create(name, description, subject, html, article_html)
+    db.email_template_create(name, description, subject, html, article_html,
+                              header_html=header_html)
     return RedirectResponse("/email-templates?msg=Template+created", status_code=302)
 
 
@@ -54,11 +56,13 @@ async def save_template(
     subject: str = Form("SecDigest — {date}"),
     html: str = Form(...),
     article_html: str = Form(...),
+    header_html: str = Form(""),
 ):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     db.email_template_update(template_id, name=name, description=description,
-                              subject=subject, html=html, article_html=article_html)
+                              subject=subject, html=html, article_html=article_html,
+                              header_html=header_html)
     return RedirectResponse(f"/email-templates?msg=Saved", status_code=302)
 
 

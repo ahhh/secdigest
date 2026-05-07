@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS email_templates (
     subject      TEXT    NOT NULL DEFAULT 'SecDigest — {date}',
     html         TEXT    NOT NULL,
     article_html TEXT    NOT NULL,
+    header_html  TEXT    DEFAULT '',
     is_builtin   INTEGER DEFAULT 0,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -435,6 +436,7 @@ def init_db():
         _migrate_subscriber_cadence(conn)
         _migrate_subscriber_confirmation(conn)
         _migrate_builtin_template_feedback(conn)
+        _migrate_email_template_header(conn)
 
 
 def _seed_config(conn):
@@ -650,6 +652,17 @@ def _migrate_add_mobile_templates(conn):
             changed = True
     if changed:
         conn.commit()
+
+
+def _migrate_email_template_header(conn):
+    """Add header_html column to email_templates for older DBs. Defaulting to
+    empty means existing templates render unchanged until an admin adds custom
+    header markup, so this migration is a no-behaviour-change one-shot."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(email_templates)").fetchall()}
+    if "header_html" in cols:
+        return
+    conn.execute("ALTER TABLE email_templates ADD COLUMN header_html TEXT DEFAULT ''")
+    conn.commit()
 
 
 def _migrate_builtin_template_feedback(conn):
@@ -1334,11 +1347,13 @@ def email_template_default() -> dict | None:
     return dict(row) if row else None
 
 
-def email_template_create(name: str, description: str, subject: str, html: str, article_html: str) -> dict:
+def email_template_create(name: str, description: str, subject: str, html: str,
+                            article_html: str, header_html: str = "") -> dict:
     with _lock:
         cur = _get_conn().execute(
-            "INSERT INTO email_templates(name, description, subject, html, article_html) VALUES (?,?,?,?,?)",
-            (name, description, subject, html, article_html),
+            "INSERT INTO email_templates(name, description, subject, html, article_html, header_html) "
+            "VALUES (?,?,?,?,?,?)",
+            (name, description, subject, html, article_html, header_html),
         )
         _get_conn().commit()
     return dict(_get_conn().execute("SELECT * FROM email_templates WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -1347,7 +1362,7 @@ def email_template_create(name: str, description: str, subject: str, html: str, 
 def email_template_update(id: int, **kwargs):
     if not kwargs:
         return
-    allowed = {"name", "description", "subject", "html", "article_html"}
+    allowed = {"name", "description", "subject", "html", "article_html", "header_html"}
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"email_template_update: disallowed columns {bad}")
@@ -1383,6 +1398,19 @@ def newsletter_get_subject(newsletter_id: int) -> str | None:
 
 def newsletter_set_subject(newsletter_id: int, subject: str):
     cfg_set(f"subject_{newsletter_id}", subject)
+
+
+def newsletter_get_header(newsletter_id: int) -> bool:
+    """Per-newsletter header render flag. Stored under 'header_<id>' in
+    config_kv to keep parity with the TOC + voice toggles."""
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"header_{newsletter_id}",)
+    ).fetchone()
+    return row[0] == "1" if row else False
+
+
+def newsletter_set_header(newsletter_id: int, enabled: bool):
+    cfg_set(f"header_{newsletter_id}", "1" if enabled else "0")
 
 
 def newsletter_get_toc(newsletter_id: int) -> bool:

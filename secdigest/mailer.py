@@ -22,6 +22,51 @@ def _sanitize_header(value: str) -> str:
     return str(value).replace("\r", "").replace("\n", "")
 
 
+def _wrap_header_html(header_html: str) -> str:
+    """Wrap an admin-authored header snippet in the <tr><td>…</td></tr> shell
+    every built-in template's body table expects. Admins typically write
+    header markup as '<h2>…</h2><p>…</p>' rather than as a table row, and
+    forcing them to think about <tr> nesting would be a footgun. We do the
+    minimal-but-correct thing: drop the snippet inside one full-width cell
+    so it lands cleanly between the title row and the article rows."""
+    snippet = (header_html or "").strip()
+    if not snippet:
+        return ""
+    # If the author already wrote a <tr> we trust them — passes straight
+    # through so power users can craft custom row layouts (e.g. multi-cell
+    # banners) without the wrapper getting in the way.
+    if snippet.lstrip().lower().startswith("<tr"):
+        return snippet
+    return (
+        '<tr><td style="padding:18px 4px 6px;font-family:-apple-system,'
+        'BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif;">'
+        f"{snippet}"
+        "</td></tr>"
+    )
+
+
+def _header_block_for(newsletter_id: int) -> str:
+    """Resolve the header block for a real send. Empty string when the toggle
+    is off, the active template has no header_html, or the field is blank.
+    {date} interpolation runs at the body level (after this block is spliced
+    in), so admins can drop {date} into their header markup naturally."""
+    if not db.newsletter_get_header(newsletter_id):
+        return ""
+    tid = db.newsletter_get_template_id(newsletter_id)
+    template = db.email_template_get(tid) if tid else db.email_template_default()
+    if not template:
+        return ""
+    return _wrap_header_html(template.get("header_html") or "")
+
+
+def _header_block_for_preview(newsletter_id: int) -> str:
+    """Identical to `_header_block_for` for now — the header content is
+    static markup, no presigned URLs to mint, so there's no preview/send
+    divergence to manage. Kept as its own function for symmetry with the
+    voice helpers and so future preview-only behaviour has a hook to land in."""
+    return _header_block_for(newsletter_id)
+
+
 def _voice_block_for(newsletter_id: int) -> str:
     """Resolve the voice block for a newsletter. Returns empty string when:
       • the per-newsletter toggle is off
@@ -258,7 +303,8 @@ def render_email_html(newsletter: dict, articles: list[dict],
                       unsubscribe_url: str = "",
                       include_toc: bool = False,
                       feedback_block: str = "",
-                      voice_block: str = "") -> str:
+                      voice_block: str = "",
+                      header_block: str = "") -> str:
     """Render the newsletter as HTML using the specified or configured template."""
     template = db.email_template_get(template_id) if template_id else None
     if not template:
@@ -314,6 +360,19 @@ def render_email_html(newsletter: dict, articles: list[dict],
             wrapped = voice_block.replace(
                 '<tr><td style="padding:',
                 '<tr><td colspan="2" style="padding:',
+                1,
+            )
+            rows_2col = wrapped + rows_2col
+
+    # Header (custom editorial markup defined per template) sits ABOVE the voice
+    # block, immediately under the title — applied after voice so it renders
+    # first. Final order: header → voice → toc → articles.
+    if header_block:
+        rows_1col = header_block + rows_1col
+        if is_2col:
+            wrapped = header_block.replace(
+                '<tr><td',
+                '<tr><td colspan="2"',
                 1,
             )
             rows_2col = wrapped + rows_2col
@@ -415,10 +474,11 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
         )
 
     voice_block = _voice_block_for(newsletter["id"])
+    header_block = _header_block_for(newsletter["id"])
 
     html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url,
                                   include_toc=include_toc, feedback_block=fb_block,
-                                  voice_block=voice_block)
+                                  voice_block=voice_block, header_block=header_block)
     text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
 
     port = int(cfg.get("smtp_port", 587))
@@ -490,6 +550,9 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     # it isn't keyed by subscriber). Resolve once outside the loop to avoid N
     # round-trips to S3 sigv4 for a 1000-subscriber blast.
     voice_block = _voice_block_for(newsletter["id"])
+    # Header is static markup with at most a {date} substitution — also
+    # identical for every recipient, so resolve once.
+    header_block = _header_block_for(newsletter["id"])
 
     port = int(cfg.get("smtp_port", 587))
     smtp_user = cfg.get("smtp_user", "")
@@ -525,7 +588,7 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
                     )
                 html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url,
                                               include_toc=include_toc, feedback_block=fb_block,
-                                              voice_block=voice_block)
+                                              voice_block=voice_block, header_block=header_block)
                 text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
                 to_email = _sanitize_header(sub["email"]).strip()
                 if not to_email or "@" not in to_email:

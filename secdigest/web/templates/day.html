@@ -125,6 +125,14 @@
                  value="{{ active_subject }}"
                  placeholder="SecDigest — {{ date_str }}">
         </div>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="checkbox-label">
+            <input type="checkbox" name="include_header" id="header-toggle" value="1"
+                   {% if active_header %}checked{% endif %}
+                   onchange="reloadPreview()">
+            Include header
+          </label>
+        </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label class="checkbox-label">
             <input type="checkbox" name="include_toc" id="toc-toggle" value="1"
@@ -181,6 +189,13 @@
           <textarea id="edit-html" class="textarea" rows="9"></textarea>
         </div>
         <div class="form-group">
+          <label class="label">Header HTML
+            <span class="text-muted" style="font-weight:400"> — optional, renders under the title when "Include header" is on</span>
+          </label>
+          <textarea id="edit-header-html" class="textarea" rows="4"
+                    placeholder="<h2>Issue intro…</h2>"></textarea>
+        </div>
+        <div class="form-group">
           <label class="label">Article HTML
             <span class="text-muted" style="font-weight:400"> — use <code>{title}</code> <code>{url}</code> <code>{summary}</code> etc.</span>
           </label>
@@ -230,7 +245,7 @@
       <button class="btn btn-ghost btn-sm" onclick="reloadPreview()">&#x21BA; Refresh</button>
     </div>
     <iframe id="email-preview"
-            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}"
+            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}&include_header={{ '1' if active_header else '0' }}"
             class="preview-frame"
             sandbox="allow-same-origin"
             frameborder="0"
@@ -257,8 +272,10 @@ function selectTemplate(id) {
 
 function reloadPreview() {
   const toc = document.getElementById('toc-toggle') && document.getElementById('toc-toggle').checked ? '1' : '0';
+  const hdr = document.getElementById('header-toggle') && document.getElementById('header-toggle').checked ? '1' : '0';
   document.getElementById('email-preview').src =
-    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '') + '&include_toc=' + toc;
+    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '') +
+    '&include_toc=' + toc + '&include_header=' + hdr;
 }
 
 function toggleTemplateEditor() {
@@ -277,6 +294,7 @@ function loadTemplateIntoEditor(id) {
       currentTemplateData = t;
       document.getElementById('edit-name').value = t.name || '';
       document.getElementById('edit-html').value = t.html || '';
+      document.getElementById('edit-header-html').value = t.header_html || '';
       document.getElementById('edit-article-html').value = t.article_html || '';
       document.getElementById('edit-builtin-note').style.display = t.is_builtin ? 'block' : 'none';
     });
@@ -291,6 +309,7 @@ function saveExisting() {
     description:  currentTemplateData.description || '',
     subject:      currentTemplateData.subject || 'SecDigest — {date}',
     html:         document.getElementById('edit-html').value,
+    header_html:  document.getElementById('edit-header-html').value,
     article_html: document.getElementById('edit-article-html').value,
   });
   document.body.appendChild(form);
@@ -313,6 +332,7 @@ function saveAsNew() {
     description:  '',
     subject:      currentTemplateData.subject || 'SecDigest — {date}',
     html:         document.getElementById('edit-html').value,
+    header_html:  document.getElementById('edit-header-html').value,
     article_html: document.getElementById('edit-article-html').value,
   });
   document.body.appendChild(form);
