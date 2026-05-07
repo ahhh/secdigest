@@ -348,13 +348,29 @@ select.input { cursor: pointer; }
 .prompt-text { font-family: monospace; font-size: 0.82em; color: var(--muted); white-space: pre-wrap; line-height: 1.5; }
 
 /* Settings */
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 24px; }
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  /* align-items: stretch is the grid default; this comment pins the contract:
+     left-column items stretch to fill the row height set by the right column,
+     so Newsletter+Security together end flush with the bottom of a tall pane
+     like Voice Summaries that spans both rows. */
+}
+@media (max-width: 720px) {
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-section--span-rows { grid-row: auto; }
+}
 .settings-section {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
 }
+/* Tall right-column panes opt into spanning the row of the next left-column
+   pane below them, so the left column gets two stacked sections that fill
+   the same vertical run. */
+.settings-section--span-rows { grid-row: span 2; }
 
 /* Misc */
 .section-label { font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
