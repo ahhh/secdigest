@@ -1,8 +1,13 @@
-"""Public unsubscribe route — no auth required."""
+"""Public unsubscribe route — no auth required.
+
+The canonical home for this is the public app (secdigest/public/), but the admin app
+keeps a copy so unsubscribe links from emails sent before the public site existed
+still work. Both share the rate limiter from secdigest.web.security."""
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from secdigest import db
+from secdigest.web.security import unsubscribe_allowed, unsubscribe_record
 
 router = APIRouter()
 
@@ -24,6 +29,12 @@ _PAGE = """\
 
 @router.get("/unsubscribe/{token}", response_class=HTMLResponse)
 async def unsubscribe(request: Request, token: str):
+    if not unsubscribe_allowed(request):
+        return HTMLResponse(
+            _PAGE.format(message="Too many attempts. Try again later."),
+            status_code=429,
+        )
+    unsubscribe_record(request)
     sub = db.subscriber_get_by_token(token)
     if sub and sub.get("active"):
         db.subscriber_unsubscribe_by_token(token)

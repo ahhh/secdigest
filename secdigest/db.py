@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS subscribers (
     name              TEXT    DEFAULT '',
     active            INTEGER DEFAULT 1,
     cadence           TEXT    NOT NULL DEFAULT 'daily',
+    confirmed         INTEGER DEFAULT 0,
+    confirm_token     TEXT,
     unsubscribe_token TEXT,
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -410,6 +412,7 @@ def init_db():
         _migrate_article_pins(conn)
         _migrate_article_source_name(conn)
         _migrate_subscriber_cadence(conn)
+        _migrate_subscriber_confirmation(conn)
 
 
 def _seed_config(conn):
@@ -543,6 +546,22 @@ def _migrate_subscriber_cadence(conn):
         conn.commit()
     except sqlite3.OperationalError:
         pass
+
+
+def _migrate_subscriber_confirmation(conn):
+    """Add confirmed/confirm_token columns. Existing rows are admin-added so we trust them
+    and backfill confirmed=1 — only public-site signups need the double-opt-in dance."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(subscribers)").fetchall()}
+    added = False
+    if "confirmed" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN confirmed INTEGER DEFAULT 0")
+        conn.execute("UPDATE subscribers SET confirmed=1")
+        added = True
+    if "confirm_token" not in cols:
+        conn.execute("ALTER TABLE subscribers ADD COLUMN confirm_token TEXT")
+        added = True
+    if added:
+        conn.commit()
 
 
 def _migrate_builtin_remove_hn_points(conn):
@@ -1000,10 +1019,11 @@ def subscriber_list() -> list[dict]:
 
 
 def subscriber_create(email: str, name: str = "") -> dict | None:
+    """Admin-side direct create — bypasses double-opt-in since the admin is trusted."""
     try:
         with _lock:
             cur = _get_conn().execute(
-                "INSERT INTO subscribers(email, name, unsubscribe_token) VALUES(?,?,?)",
+                "INSERT INTO subscribers(email, name, confirmed, unsubscribe_token) VALUES(?,?,1,?)",
                 (email, name, str(uuid.uuid4())),
             )
             _get_conn().commit()
@@ -1057,6 +1077,64 @@ def subscriber_unsubscribe_by_token(token: str):
             "UPDATE subscribers SET active=0 WHERE unsubscribe_token=?", (token,)
         )
         _get_conn().commit()
+
+
+def subscriber_get_by_email(email: str) -> dict | None:
+    row = _get_conn().execute(
+        "SELECT * FROM subscribers WHERE email=?", (email.lower(),)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def subscriber_create_pending(email: str, cadence: str, confirm_token: str) -> dict | None:
+    """Insert a new subscriber in the pending state (active=0, confirmed=0). Returns the row,
+    or None on email-uniqueness conflict — callers should check subscriber_get_by_email first."""
+    if cadence not in ("daily", "weekly", "monthly"):
+        raise ValueError(f"subscriber_create_pending: bad cadence {cadence!r}")
+    try:
+        with _lock:
+            cur = _get_conn().execute(
+                """INSERT INTO subscribers
+                   (email, name, active, cadence, confirmed, confirm_token, unsubscribe_token)
+                   VALUES (?, '', 0, ?, 0, ?, ?)""",
+                (email.lower(), cadence, confirm_token, str(uuid.uuid4())),
+            )
+            _get_conn().commit()
+        return dict(_get_conn().execute(
+            "SELECT * FROM subscribers WHERE id=?", (cur.lastrowid,)
+        ).fetchone())
+    except Exception:
+        return None
+
+
+def subscriber_set_confirm_token(id: int, token: str | None):
+    """Rotate (or clear) the confirm token for a subscriber row."""
+    with _lock:
+        _get_conn().execute(
+            "UPDATE subscribers SET confirm_token=? WHERE id=?", (token, id)
+        )
+        _get_conn().commit()
+
+
+def subscriber_confirm(token: str) -> dict | None:
+    """Mark a subscriber confirmed via their single-use confirm token. Returns the row
+    on success, None if the token is unknown / already used."""
+    if not token:
+        return None
+    row = _get_conn().execute(
+        "SELECT * FROM subscribers WHERE confirm_token=?", (token,)
+    ).fetchone()
+    if not row:
+        return None
+    with _lock:
+        _get_conn().execute(
+            "UPDATE subscribers SET confirmed=1, active=1, confirm_token=NULL WHERE id=?",
+            (row["id"],),
+        )
+        _get_conn().commit()
+    return dict(_get_conn().execute(
+        "SELECT * FROM subscribers WHERE id=?", (row["id"],)
+    ).fetchone())
 
 
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────

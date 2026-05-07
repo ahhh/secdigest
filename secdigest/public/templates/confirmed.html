@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% if ok %}Subscribed!{% else %}Link expired{% endif %} — SecDigest</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="hero narrow">
+    <div class="brand">SecDigest</div>
+    {% if ok %}
+      <h1>You're in.</h1>
+      <p class="tagline">
+        You'll receive the <strong>{{ cadence }}</strong> SecDigest going forward.
+        Your first issue arrives at the next scheduled send.
+      </p>
+    {% else %}
+      <h1>That link's expired.</h1>
+      <p class="tagline">
+        Confirmation links are single-use. If you've already confirmed,
+        you're good — otherwise, just sign up again.
+      </p>
+      <p><a href="/" class="link-back">← Subscribe</a></p>
+    {% endif %}
+  </main>
+</body>
+</html>

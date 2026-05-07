@@ -19,6 +19,16 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 DB_PATH = str(DATA_DIR / "secdigest.db")
 
+# ── Public site (separate uvicorn instance) ─────────────────────────────────
+# Setting PUBLIC_SITE_ENABLED=1 starts a second FastAPI app on PUBLIC_PORT for
+# the landing page + subscribe/confirm/unsubscribe flow. PUBLIC_BASE_URL is the
+# public-facing URL inserted into confirmation/unsubscribe links — set this to
+# whatever the public site is reachable at (e.g. https://secdigest.example.com).
+PUBLIC_SITE_ENABLED = os.environ.get("PUBLIC_SITE_ENABLED", "0") == "1"
+PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "0.0.0.0")
+PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "8000"))
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
+
 DEFAULT_PASSWORD_HASH = os.environ.get("PASSWORD_HASH", "")
 
 # DB-backed config keys — these can be edited at runtime via the Settings page.

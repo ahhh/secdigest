@@ -69,3 +69,41 @@ def login_record_failure(request: Request) -> None:
 def login_clear(request: Request) -> None:
     ip = _client_ip(request)
     _LOGIN_ATTEMPTS.pop(ip, None)
+
+
+# ── Public-site rate limiting ───────────────────────────────────────────────
+#
+# Sliding-window per-IP buckets, distinct from the login limiter so a brute-force
+# login spree doesn't lock out subscribe flows on the same shared IP. Thresholds
+# are intentionally generous — these are anti-spam, not anti-DoS.
+
+_SUBSCRIBE_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
+_UNSUBSCRIBE_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
+_SUBSCRIBE_WINDOW_SECONDS = 3600   # 1 hour
+_SUBSCRIBE_MAX = 5
+_UNSUBSCRIBE_WINDOW_SECONDS = 3600
+_UNSUBSCRIBE_MAX = 10
+
+
+def _bucket_allowed(bucket: dict, ip: str, window: int, limit: int) -> bool:
+    cutoff = time() - window
+    bucket[ip] = [t for t in bucket[ip] if t > cutoff]
+    return len(bucket[ip]) < limit
+
+
+def subscribe_allowed(request: Request) -> bool:
+    return _bucket_allowed(_SUBSCRIBE_ATTEMPTS, _client_ip(request),
+                            _SUBSCRIBE_WINDOW_SECONDS, _SUBSCRIBE_MAX)
+
+
+def subscribe_record(request: Request) -> None:
+    _SUBSCRIBE_ATTEMPTS[_client_ip(request)].append(time())
+
+
+def unsubscribe_allowed(request: Request) -> bool:
+    return _bucket_allowed(_UNSUBSCRIBE_ATTEMPTS, _client_ip(request),
+                            _UNSUBSCRIBE_WINDOW_SECONDS, _UNSUBSCRIBE_MAX)
+
+
+def unsubscribe_record(request: Request) -> None:
+    _UNSUBSCRIBE_ATTEMPTS[_client_ip(request)].append(time())
