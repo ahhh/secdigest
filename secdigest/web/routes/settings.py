@@ -59,14 +59,25 @@ async def save_settings(request: Request):
     form = await request.form()
 
     for field in ("smtp_host", "smtp_port", "smtp_user", "smtp_from",
-                  "fetch_time", "hn_min_score", "max_articles", "max_curator_articles", "base_url"):
+                  "fetch_time", "hn_min_score", "max_articles", "max_curator_articles", "base_url",
+                  "elevenlabs_voice_id", "elevenlabs_model", "elevenlabs_speed",
+                  "aws_access_key_id", "aws_s3_bucket", "aws_s3_region", "aws_s3_prefix"):
         if field in form:
             db.cfg_set(field, form[field])
 
     if form.get("smtp_pass"):
         db.cfg_set("smtp_pass", crypto.encrypt(form["smtp_pass"]))
+    # Both secrets are encrypted at rest with the same stream cipher used for
+    # smtp_pass. We only write when a non-blank value is submitted so the
+    # password-input "leave blank to keep current" UX behaves as advertised.
+    if form.get("elevenlabs_api_key"):
+        db.cfg_set("elevenlabs_api_key", crypto.encrypt(form["elevenlabs_api_key"]))
+    if form.get("aws_secret_access_key"):
+        db.cfg_set("aws_secret_access_key", crypto.encrypt(form["aws_secret_access_key"]))
 
     db.cfg_set("auto_send", "1" if form.get("auto_send") else "0")
+    db.cfg_set("feedback_enabled", "1" if form.get("feedback_enabled") else "0")
+    db.cfg_set("voice_summary_enabled", "1" if form.get("voice_summary_enabled") else "0")
 
     if form.get("new_password"):
         db.cfg_set("password_hash", hash_password(form["new_password"]))
@@ -141,6 +152,18 @@ async def test_smtp(request: Request):
 
     server.quit()
     return JSONResponse({"ok": True, "steps": steps})
+
+
+@router.post("/settings/test-voice")
+async def test_voice(request: Request):
+    """Round-trip ElevenLabs + S3 with a tiny throwaway TTS clip. Confirms both
+    sets of credentials are valid before an admin commits to enabling voice
+    summaries on a real newsletter."""
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    from secdigest import voice
+    ok, msg = voice.smoke_test()
+    return JSONResponse({"ok": ok, "msg": msg})
 
 
 @router.post("/settings/clear-curation-error")

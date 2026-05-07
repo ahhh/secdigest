@@ -102,6 +102,107 @@
       <input type="text" name="base_url" value="{{ cfg.base_url }}"
              class="input" placeholder="http://localhost:8000">
     </div>
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="feedback_enabled"
+               {% if cfg.feedback_enabled == '1' %}checked{% endif %}>
+        Show signal / noise feedback buttons in emails
+      </label>
+      <p class="text-muted" style="font-size:.8em;margin:4px 0 0;line-height:1.4;">
+        Subscribers can rate each issue with one click. Counts surface next to each name on the Subscribers page.
+      </p>
+    </div>
+  </div>
+
+  <div class="settings-section settings-section--span-rows">
+    <div class="section-label">Voice Summaries
+      <a href="https://elevenlabs.io" target="_blank" rel="noopener"
+         style="font-weight:400;font-size:.8em;margin-left:6px;color:var(--accent,#58a6ff);text-decoration:none;">ElevenLabs &#x2197;</a>
+    </div>
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="voice_summary_enabled"
+               {% if cfg.voice_summary_enabled == '1' %}checked{% endif %}>
+        Enable voice summaries (audio intro above the table of contents)
+      </label>
+    </div>
+    <div class="form-group">
+      <label class="label">ElevenLabs API key
+        <span class="text-muted">(leave blank to keep current)</span>
+      </label>
+      <input type="password" name="elevenlabs_api_key" class="input"
+             placeholder="••••••••" autocomplete="off">
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;">
+        <label class="label">Voice ID</label>
+        <input type="text" name="elevenlabs_voice_id"
+               value="{{ cfg.elevenlabs_voice_id }}"
+               class="input" placeholder="21m00Tcm4TlvDq8ikWAM">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label class="label">Model</label>
+        <input type="text" name="elevenlabs_model"
+               value="{{ cfg.elevenlabs_model }}"
+               class="input" placeholder="eleven_turbo_v2_5">
+      </div>
+      <div class="form-group" style="flex:0 0 100px;">
+        <label class="label">Speed</label>
+        <input type="number" name="elevenlabs_speed"
+               value="{{ cfg.elevenlabs_speed or '1.10' }}"
+               min="0.7" max="1.2" step="0.05"
+               class="input" placeholder="1.10">
+      </div>
+    </div>
+    <p class="text-muted" style="font-size:.8em;line-height:1.6;margin-top:4px;">
+      Default voice is "Rachel" (<code>21m00Tcm4TlvDq8ikWAM</code>). Browse voices in your
+      <a href="https://elevenlabs.io/app/voice-library" target="_blank" rel="noopener">voice library</a>.
+      Speed is clamped to 0.7&ndash;1.2; <code>1.10</code> is roughly 10% faster than natural cadence.
+    </p>
+
+    <div class="section-label" style="margin-top:18px;">Audio storage (AWS S3)</div>
+    <div class="form-row">
+      <div class="form-group" style="flex:1;">
+        <label class="label">Access key ID</label>
+        <input type="text" name="aws_access_key_id"
+               value="{{ cfg.aws_access_key_id }}"
+               class="input" placeholder="AKIA…" autocomplete="off">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label class="label">Secret access key
+          <span class="text-muted">(leave blank to keep current)</span>
+        </label>
+        <input type="password" name="aws_secret_access_key" class="input"
+               placeholder="••••••••" autocomplete="off">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2;">
+        <label class="label">Bucket</label>
+        <input type="text" name="aws_s3_bucket"
+               value="{{ cfg.aws_s3_bucket }}"
+               class="input" placeholder="my-secdigest-audio">
+      </div>
+      <div class="form-group" style="flex:1;">
+        <label class="label">Region</label>
+        <input type="text" name="aws_s3_region"
+               value="{{ cfg.aws_s3_region }}"
+               class="input" placeholder="us-east-1">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="label">Object prefix</label>
+      <input type="text" name="aws_s3_prefix"
+             value="{{ cfg.aws_s3_prefix }}"
+             class="input" placeholder="secdigest/audio/">
+    </div>
+    <p class="text-muted" style="font-size:.8em;line-height:1.6;margin-top:4px;">
+      Bucket should be <strong style="color:var(--text)">private</strong>. Email links use 7-day
+      presigned URLs so audio expires naturally and old issues don't stay publicly listable.
+    </p>
+    <button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px"
+            onclick="testVoice()">&#x25B6; Test Voice + S3</button>
+    <div id="voice-test-result" style="display:none;margin-top:10px;"></div>
   </div>
 
   <div class="settings-section">
@@ -166,6 +267,29 @@ function testSmtp() {
       out.style.display = 'block';
     })
     .finally(() => { btn.disabled = false; btn.textContent = '▶ Test Connection'; });
+}
+
+function testVoice() {
+  const btn = event.target;
+  const out = document.getElementById('voice-test-result');
+  btn.disabled = true;
+  btn.textContent = 'Testing…';
+  out.style.display = 'none';
+
+  fetch('/settings/test-voice', {method: 'POST', headers: {'X-CSRF-Token': CSRF_TOKEN}})
+    .then(r => r.json())
+    .then(data => {
+      const colour = data.ok ? 'var(--green)' : 'var(--red)';
+      out.innerHTML =
+        `<div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:10px;">
+           <div style="display:flex;gap:8px;align-items:baseline;font-size:.82em;">
+             <span style="color:${colour};font-family:monospace;">${data.ok ? '✓' : '✗'}</span>
+             <span class="text-muted">${data.msg}</span>
+           </div>
+         </div>`;
+      out.style.display = 'block';
+    })
+    .finally(() => { btn.disabled = false; btn.textContent = '▶ Test Voice + S3'; });
 }
 </script>
 

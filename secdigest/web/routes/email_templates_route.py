@@ -17,7 +17,19 @@ async def templates_list(request: Request):
     return templates.TemplateResponse("email_templates.html", {
         "request": request,
         "email_templates": db.email_template_list(),
+        "header_html": db.cfg_get("header_html") or "",
     })
+
+
+@router.post("/email-templates/header")
+async def save_global_header(request: Request, header_html: str = Form("")):
+    """Save the single global newsletter header. The toggle that controls
+    whether it renders in a given issue lives on the per-newsletter builder;
+    this route only stores the markup itself."""
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    db.cfg_set("header_html", header_html or "")
+    return RedirectResponse("/email-templates?msg=Header+saved", status_code=302)
 
 
 @router.get("/email-templates/{template_id}/json")

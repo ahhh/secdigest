@@ -84,6 +84,14 @@
                  value="{{ active_subject }}"
                  placeholder="SecDigest {{ kind_label }} — {{ period_start }}">
         </div>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="checkbox-label">
+            <input type="checkbox" name="include_header" id="header-toggle" value="1"
+                   {% if active_header %}checked{% endif %}
+                   onchange="reloadPreview()">
+            Include header
+          </label>
+        </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label class="checkbox-label">
             <input type="checkbox" name="include_toc" id="toc-toggle" value="1"
@@ -97,6 +105,9 @@
         </button>
       </form>
     </div>
+
+    {% set path_prefix = 'week' if kind == 'weekly' else 'month' %}
+    {% include "_voice_panel.html" with context %}
 
     <div class="builder-section">
       <div class="section-label" style="margin-bottom:8px;">Send Test</div>
@@ -123,7 +134,7 @@
       <button class="btn btn-ghost btn-sm" onclick="reloadPreview()">&#x21BA; Refresh</button>
     </div>
     <iframe id="email-preview"
-            src="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}"
+            src="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}&include_header={{ '1' if active_header else '0' }}"
             class="preview-frame"
             sandbox="allow-same-origin"
             frameborder="0"
@@ -142,8 +153,10 @@ function selectTemplate(id) {
 }
 function reloadPreview() {
   const toc = document.getElementById('toc-toggle') && document.getElementById('toc-toggle').checked ? '1' : '0';
+  const hdr = document.getElementById('header-toggle') && document.getElementById('header-toggle').checked ? '1' : '0';
   document.getElementById('email-preview').src =
-    baseUrl + '/preview?template_id=' + (currentTemplateId || '') + '&include_toc=' + toc;
+    baseUrl + '/preview?template_id=' + (currentTemplateId || '') +
+    '&include_toc=' + toc + '&include_header=' + hdr;
 }
 </script>
 

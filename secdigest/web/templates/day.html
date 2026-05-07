@@ -125,6 +125,14 @@
                  value="{{ active_subject }}"
                  placeholder="SecDigest — {{ date_str }}">
         </div>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="checkbox-label">
+            <input type="checkbox" name="include_header" id="header-toggle" value="1"
+                   {% if active_header %}checked{% endif %}
+                   onchange="reloadPreview()">
+            Include header
+          </label>
+        </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label class="checkbox-label">
             <input type="checkbox" name="include_toc" id="toc-toggle" value="1"
@@ -138,6 +146,10 @@
         </button>
       </form>
     </div>
+
+    <!-- Voice summary -->
+    {% set path_prefix = 'day' %}
+    {% include "_voice_panel.html" with context %}
 
     <!-- Send test email -->
     <div class="builder-section">
@@ -226,7 +238,7 @@
       <button class="btn btn-ghost btn-sm" onclick="reloadPreview()">&#x21BA; Refresh</button>
     </div>
     <iframe id="email-preview"
-            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}"
+            src="/day/{{ date_str }}/preview?template_id={{ active_template_id or '' }}&include_toc={{ '1' if active_toc else '0' }}&include_header={{ '1' if active_header else '0' }}"
             class="preview-frame"
             sandbox="allow-same-origin"
             frameborder="0"
@@ -253,8 +265,10 @@ function selectTemplate(id) {
 
 function reloadPreview() {
   const toc = document.getElementById('toc-toggle') && document.getElementById('toc-toggle').checked ? '1' : '0';
+  const hdr = document.getElementById('header-toggle') && document.getElementById('header-toggle').checked ? '1' : '0';
   document.getElementById('email-preview').src =
-    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '') + '&include_toc=' + toc;
+    '/day/' + dateStr + '/preview?template_id=' + (currentTemplateId || '') +
+    '&include_toc=' + toc + '&include_header=' + hdr;
 }
 
 function toggleTemplateEditor() {

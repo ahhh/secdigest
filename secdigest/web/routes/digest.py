@@ -67,6 +67,10 @@ async def _digest_view(request: Request, kind: str, date_str: str):
             raw = default_subject
         active_subject = raw.replace("{date}", period_start)
     active_toc = db.newsletter_get_toc(digest["id"])
+    active_header = db.newsletter_get_header(digest["id"])
+    active_voice = db.newsletter_get_voice_enabled(digest["id"])
+    voice_summary_enabled = db.cfg_get("voice_summary_enabled") == "1"
+    voice_status = db.voice_audio_get(digest["id"])
 
     return templates.TemplateResponse("digest.html", {
         "request": request,
@@ -82,6 +86,10 @@ async def _digest_view(request: Request, kind: str, date_str: str):
         "active_template_id": active_template_id,
         "active_subject": active_subject,
         "active_toc": active_toc,
+        "active_header": active_header,
+        "active_voice": active_voice,
+        "voice_summary_enabled": voice_summary_enabled,
+        "voice_status": voice_status,
     })
 
 
@@ -198,6 +206,7 @@ async def _set_template(request: Request, kind: str, date_str: str):
     template_id = int(form.get("template_id", 0))
     subject = form.get("subject", "").strip()
     include_toc = form.get("include_toc") == "1"
+    include_header = form.get("include_header") == "1"
     period_start, period_end = _bounds(kind, date_str)
     digest = _ensure_digest(kind, period_start, period_end)
     if template_id:
@@ -205,6 +214,7 @@ async def _set_template(request: Request, kind: str, date_str: str):
     if subject:
         db.newsletter_set_subject(digest["id"], subject)
     db.newsletter_set_toc(digest["id"], include_toc)
+    db.newsletter_set_header(digest["id"], include_header)
     return _redirect(kind, date_str, view="builder")
 
 
@@ -235,7 +245,8 @@ def _placeholder(msg: str) -> HTMLResponse:
 
 
 async def _preview(request: Request, kind: str, date_str: str,
-                   template_id: int = 0, include_toc: int = 0):
+                   template_id: int = 0, include_toc: int = 0,
+                   include_header: int = 0):
     if not is_authed(request):
         return HTMLResponse("", status_code=401)
     period_start, _ = _bounds(kind, date_str)
@@ -245,21 +256,30 @@ async def _preview(request: Request, kind: str, date_str: str,
     articles = db.digest_article_list(digest["id"])
     if not any(a.get("included", 1) for a in articles):
         return _placeholder("No included articles — toggle some on in the curator.")
+    voice_block = mailer._voice_block_for_preview(digest["id"])
+    header_block = mailer._wrap_header_html(db.cfg_get("header_html") or "") \
+        if include_header else ""
     return HTMLResponse(
         mailer.render_email_html(digest, articles, template_id or None,
-                                 include_toc=bool(include_toc)),
+                                 include_toc=bool(include_toc),
+                                 voice_block=voice_block,
+                                 header_block=header_block),
         headers=_PREVIEW_HEADERS,
     )
 
 
 @router.get("/week/{date_str}/preview", response_class=HTMLResponse)
-async def week_preview(request: Request, date_str: str, template_id: int = 0, include_toc: int = 0):
-    return await _preview(request, "weekly", date_str, template_id, include_toc)
+async def week_preview(request: Request, date_str: str, template_id: int = 0,
+                       include_toc: int = 0, include_header: int = 0):
+    return await _preview(request, "weekly", date_str, template_id,
+                          include_toc, include_header)
 
 
 @router.get("/month/{date_str}/preview", response_class=HTMLResponse)
-async def month_preview(request: Request, date_str: str, template_id: int = 0, include_toc: int = 0):
-    return await _preview(request, "monthly", date_str, template_id, include_toc)
+async def month_preview(request: Request, date_str: str, template_id: int = 0,
+                        include_toc: int = 0, include_header: int = 0):
+    return await _preview(request, "monthly", date_str, template_id,
+                          include_toc, include_header)
 
 
 async def _send(request: Request, kind: str, date_str: str):

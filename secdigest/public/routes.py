@@ -11,6 +11,7 @@ from secdigest import config, db, mailer
 from secdigest.web.security import (
     subscribe_allowed, subscribe_record,
     unsubscribe_allowed, unsubscribe_record,
+    feedback_allowed, feedback_record_attempt,
 )
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -113,6 +114,58 @@ async def confirm(request: Request, token: str):
         "request": request,
         "ok": sub is not None,
         "cadence": sub["cadence"] if sub else None,
+    })
+
+
+@router.get("/feedback/{token}/{newsletter_id}/{vote}", response_class=HTMLResponse)
+async def feedback(request: Request, token: str, newsletter_id: int, vote: str):
+    """Record a one-click signal/noise vote from an email link.
+
+    Identity is the subscriber's unsubscribe_token — the same value already
+    embedded in their email footer. Reusing it keeps URL space tidy and avoids
+    minting a parallel feedback secret. Both vote and token-state branches
+    converge on the same template so a probe can't enumerate which tokens are
+    valid by comparing response bodies."""
+    if vote not in ("signal", "noise"):
+        return templates.TemplateResponse("feedback.html", {
+            "request": request, "ok": False,
+            "message": "That isn't a valid feedback option.",
+        }, status_code=400)
+
+    if not feedback_allowed(request):
+        return templates.TemplateResponse("feedback.html", {
+            "request": request, "ok": False,
+            "message": "Too many attempts from your network. Try again later.",
+        }, status_code=429)
+    feedback_record_attempt(request)
+
+    # Toggle the feedback feature globally — any votes cast while disabled get
+    # bounced rather than silently recorded, so the admin's setting is honoured
+    # in both directions (no buttons rendered + no votes accepted).
+    if db.cfg_get("feedback_enabled") != "1":
+        return templates.TemplateResponse("feedback.html", {
+            "request": request, "ok": False,
+            "message": "Feedback isn't enabled right now.",
+        }, status_code=404)
+
+    sub = db.subscriber_get_by_token(token)
+    if not sub:
+        return templates.TemplateResponse("feedback.html", {
+            "request": request, "ok": False,
+            "message": "This feedback link is invalid or has expired.",
+        })
+
+    # Confirm the newsletter exists; we don't need to load it, just guard against
+    # FK-violation errors and against a hostile caller spamming arbitrary IDs.
+    if not db.newsletter_get_by_id(newsletter_id):
+        return templates.TemplateResponse("feedback.html", {
+            "request": request, "ok": False,
+            "message": "We couldn't find that issue.",
+        })
+
+    db.feedback_record(sub["id"], newsletter_id, vote)
+    return templates.TemplateResponse("feedback.html", {
+        "request": request, "ok": True, "vote": vote,
     })
 
 

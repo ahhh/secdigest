@@ -7,6 +7,34 @@
   <button class="btn btn-outline" onclick="toggleNewForm()">+ New Template</button>
 </div>
 
+{% if request.query_params.get('msg') %}
+<div class="flash flash-{{ request.query_params.get('status', 'info') }}" style="margin-bottom:16px;">
+  {{ request.query_params.get('msg') }}
+</div>
+{% endif %}
+
+<div class="form-card" style="margin-bottom:24px;">
+  <div class="section-label">Newsletter Header
+    <span class="text-muted" style="font-weight:400;font-size:.85em;margin-left:6px;">
+      &mdash; renders under the title, before the first article. Toggle per-issue in the email builder. Used by every template.
+    </span>
+  </div>
+  <form action="/email-templates/header" method="post">
+    {{ csrf_input(request) }}
+    <div class="form-group">
+      <label class="label">Header HTML
+        <span class="text-muted" style="font-weight:400">(supports <code>{date}</code>)</span>
+      </label>
+      <textarea name="header_html" class="textarea" rows="5"
+                placeholder="<h2 style=&quot;color:#39ff14&quot;>This week's wire</h2><p>Editor's intro goes here…</p>">{{ header_html }}</textarea>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Save Header</button>
+    <span class="text-muted" style="font-size:.8em;margin-left:10px;">
+      Leave blank to disable the header globally.
+    </span>
+  </form>
+</div>
+
 <div id="new-form" style="display:none" class="form-card" style="margin-bottom:24px;">
   <div class="section-label">New Template</div>
   <form action="/email-templates/new" method="post">

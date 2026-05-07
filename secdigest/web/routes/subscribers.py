@@ -21,6 +21,7 @@ async def subscribers_page(request: Request):
     return templates.TemplateResponse("subscribers.html", {
         "request": request,
         "subscribers": db.subscriber_list(),
+        "feedback_counts": db.feedback_counts_by_subscriber(),
     })
 
 

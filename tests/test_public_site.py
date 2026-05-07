@@ -48,7 +48,8 @@ def test_all_public_templates_parse():
     template_dir = (Path(__file__).resolve().parents[1]
                     / "secdigest" / "public" / "templates")
     env = Environment(loader=FileSystemLoader(str(template_dir)))
-    for t in ("landing.html", "thanks.html", "confirmed.html", "unsubscribed.html"):
+    for t in ("landing.html", "thanks.html", "confirmed.html",
+              "unsubscribed.html", "feedback.html"):
         env.get_template(t)
 
 

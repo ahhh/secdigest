@@ -128,6 +128,10 @@ async def day_view(request: Request, date_str: str):
         tmpl = next((t for t in email_templates if t["id"] == active_template_id), email_templates[0] if email_templates else None)
         active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"SecDigest — {date_str}"
     active_toc = db.newsletter_get_toc(newsletter["id"]) if newsletter else False
+    active_header = db.newsletter_get_header(newsletter["id"]) if newsletter else False
+    active_voice = db.newsletter_get_voice_enabled(newsletter["id"]) if newsletter else False
+    voice_summary_enabled = db.cfg_get("voice_summary_enabled") == "1"
+    voice_status = db.voice_audio_get(newsletter["id"]) if newsletter else None
     return templates.TemplateResponse("day.html", {
         "request": request,
         "date_str": date_str,
@@ -140,6 +144,10 @@ async def day_view(request: Request, date_str: str):
         "active_template_id": active_template_id,
         "active_subject": active_subject,
         "active_toc": active_toc,
+        "active_header": active_header,
+        "active_voice": active_voice,
+        "voice_summary_enabled": voice_summary_enabled,
+        "voice_status": voice_status,
     })
 
 
@@ -157,7 +165,8 @@ async def day_fetch(request: Request, date_str: str):
 
 
 @router.get("/day/{date_str}/preview", response_class=HTMLResponse)
-async def day_preview(request: Request, date_str: str, template_id: int = 0, include_toc: int = 0):
+async def day_preview(request: Request, date_str: str, template_id: int = 0,
+                      include_toc: int = 0, include_header: int = 0):
     if not is_authed(request):
         return HTMLResponse("", status_code=401)
     _preview_headers = {
@@ -176,8 +185,17 @@ async def day_preview(request: Request, date_str: str, template_id: int = 0, inc
     if not any(a.get("included", 1) for a in articles):
         return _placeholder("No included articles yet — add them in the Curator tab.")
     tid = template_id or None
+    voice_block = mailer._voice_block_for_preview(newsletter["id"])
+    # Preview is query-param driven (so the toggle live-updates without
+    # persisting). The header content itself lives in global config_kv,
+    # not on the template, so a template switch never changes the header.
+    header_block = mailer._wrap_header_html(db.cfg_get("header_html") or "") \
+        if include_header else ""
     return HTMLResponse(
-        mailer.render_email_html(newsletter, articles, tid, include_toc=bool(include_toc)),
+        mailer.render_email_html(newsletter, articles, tid,
+                                 include_toc=bool(include_toc),
+                                 voice_block=voice_block,
+                                 header_block=header_block),
         headers=_preview_headers,
     )
 
@@ -190,12 +208,14 @@ async def set_template(request: Request, date_str: str):
     template_id = int(form.get("template_id", 0))
     subject = form.get("subject", "").strip()
     include_toc = form.get("include_toc") == "1"
+    include_header = form.get("include_header") == "1"
     newsletter = db.newsletter_get_or_create(date_str)
     if template_id:
         db.newsletter_set_template_id(newsletter["id"], template_id)
     if subject:
         db.newsletter_set_subject(newsletter["id"], subject)
     db.newsletter_set_toc(newsletter["id"], include_toc)
+    db.newsletter_set_header(newsletter["id"], include_header)
     return RedirectResponse(f"/day/{date_str}?view=builder", status_code=302)
 
 

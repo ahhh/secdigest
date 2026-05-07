@@ -1,0 +1,189 @@
+{# Shared voice-summary panel for the day + digest builders.
+   Caller must pass:
+     • path_prefix      e.g. 'day', 'week', 'month' (drives /POST URLs)
+     • date_str         the URL date for this curator
+     • active_voice     bool — per-newsletter render toggle
+     • voice_summary_enabled  bool — global master switch
+     • voice_status     row dict from voice_audio (or None) #}
+
+<div class="builder-section" id="voice-panel">
+  <div class="section-label" style="margin-bottom:8px;">
+    Voice Summary
+    {% if not voice_summary_enabled %}
+    <span class="badge badge-gray" style="font-size:.7em;margin-left:6px;">disabled</span>
+    {% endif %}
+  </div>
+
+  {% if not voice_summary_enabled %}
+  <p class="text-muted" style="font-size:.8em;line-height:1.4;margin:0 0 8px;">
+    Enable voice summaries in <a href="/settings">Settings</a> to use this feature.
+  </p>
+  {% else %}
+
+  <div class="form-group" style="margin-bottom:10px;">
+    <label class="checkbox-label">
+      <input type="checkbox" id="voice-toggle" {% if active_voice %}checked{% endif %}
+             onchange="setVoiceEnabled(this.checked)">
+      Include voice summary in this issue
+    </label>
+    <p class="text-muted" style="font-size:.75em;margin:4px 0 0;line-height:1.4;">
+      Renders just above the table of contents. Subscribers see a "Listen ▶" link.
+    </p>
+  </div>
+
+  <div id="voice-status-card"
+       data-status="{{ (voice_status.status if voice_status else 'idle') }}"
+       style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px;">
+    <div id="voice-status-line" style="display:flex;align-items:center;gap:8px;font-size:.85em;">
+      <span id="voice-status-icon" aria-hidden="true">&#x25CB;</span>
+      <span id="voice-status-text">Not generated yet</span>
+    </div>
+    <div id="voice-error-detail" class="text-muted"
+         style="display:none;font-size:.75em;margin-top:6px;line-height:1.4;color:var(--red,#f85149);"></div>
+  </div>
+
+  <div class="btn-group">
+    <button type="button" class="btn btn-outline btn-sm" id="voice-generate-btn"
+            onclick="generateVoice()" style="flex:1;">
+      &#x2726; Generate Voice
+    </button>
+  </div>
+
+  <p class="text-muted" style="font-size:.7em;line-height:1.4;margin-top:8px;">
+    Voice by <a href="https://elevenlabs.io" target="_blank" rel="noopener">ElevenLabs</a>.
+    Generated audio is stored in your S3 bucket; emails link via 7-day presigned URLs.
+  </p>
+  {% endif %}
+</div>
+
+{% if voice_summary_enabled %}
+<script>
+(function () {
+  const PATH_PREFIX = {{ path_prefix | tojson }};
+  const DATE_STR = {{ date_str | tojson }};
+  const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+
+  const card = document.getElementById('voice-status-card');
+  const icon = document.getElementById('voice-status-icon');
+  const text = document.getElementById('voice-status-text');
+  const errEl = document.getElementById('voice-error-detail');
+  const btn = document.getElementById('voice-generate-btn');
+  let pollTimer = null;
+
+  // Status display table — keeps the icon/label mapping in one place so the
+  // four states (idle/queued/generating/ready/failed) render consistently.
+  const STATES = {
+    idle:       {icon: '○',   label: 'Not generated yet',          spin: false},
+    queued:     {icon: '⧗',   label: 'Queued…',               spin: true},
+    generating: {icon: '⟳',   label: 'Building audio…',       spin: true},
+    ready:      {icon: '▶',   label: 'Ready',                       spin: false},
+    failed:     {icon: '⚠',   label: 'Generation failed',           spin: false},
+  };
+
+  function fmtDuration(sec) {
+    if (!sec) return '';
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+
+  // Track previous status so we can refresh the preview iframe exactly once
+  // when a build finishes — without that, the admin still sees the
+  // "preview — generate audio to enable" placeholder until they click Refresh.
+  let prevStatus = card.dataset.status || 'idle';
+
+  function render(status, payload) {
+    const state = STATES[status] || STATES.idle;
+    icon.textContent = state.icon;
+    icon.style.animation = state.spin ? 'spin 1.2s linear infinite' : 'none';
+    let label = state.label;
+    if (status === 'ready' && payload && payload.duration) {
+      label = `Ready — ${fmtDuration(payload.duration)}`;
+    }
+    text.textContent = label;
+    if (status === 'ready' && prevStatus !== 'ready') {
+      if (typeof window.reloadPreview === 'function') window.reloadPreview();
+    }
+    prevStatus = status;
+    card.dataset.status = status;
+    if (status === 'failed' && payload && payload.error) {
+      errEl.textContent = payload.error;
+      errEl.style.display = 'block';
+    } else {
+      errEl.style.display = 'none';
+    }
+    if (status === 'queued' || status === 'generating') {
+      btn.disabled = true;
+      btn.textContent = 'Building…';
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = (status === 'ready') ? '&#x21BA; Re-generate' : '&#x2726; Generate Voice';
+    }
+  }
+
+  function poll() {
+    fetch(`/${PATH_PREFIX}/${DATE_STR}/voice/status`)
+      .then(r => r.json())
+      .then(d => {
+        render(d.status || 'idle', d);
+        if (d.status === 'queued' || d.status === 'generating') {
+          // Keep polling. The 2s cadence balances UI snappiness against
+          // hammering the admin server with status checks.
+          pollTimer = setTimeout(poll, 2000);
+        } else {
+          pollTimer = null;
+        }
+      })
+      .catch(() => { pollTimer = setTimeout(poll, 5000); });
+  }
+
+  window.generateVoice = function () {
+    fetch(`/${PATH_PREFIX}/${DATE_STR}/voice/generate`, {
+      method: 'POST',
+      headers: {'X-CSRF-Token': CSRF},
+    })
+    .then(r => {
+      if (!r.ok) {
+        return r.json().then(j => {
+          render('failed', {error: j.error || `HTTP ${r.status}`});
+        });
+      }
+      render('queued', {});
+      if (!pollTimer) poll();
+    });
+  };
+
+  window.setVoiceEnabled = function (on) {
+    const fd = new FormData();
+    fd.append('enabled', on ? '1' : '0');
+    fetch(`/${PATH_PREFIX}/${DATE_STR}/voice/toggle`, {
+      method: 'POST',
+      headers: {'X-CSRF-Token': CSRF},
+      body: fd,
+    }).then(() => {
+      // Reflect the toggle in the preview immediately — when on, the block
+      // appears (real or placeholder); when off, it disappears.
+      if (typeof window.reloadPreview === 'function') window.reloadPreview();
+    });
+  };
+
+  // Hydrate from the server-rendered status, then start polling if we landed
+  // mid-generation (e.g. admin reloaded the page during a build).
+  const initial = card.dataset.status || 'idle';
+  if (initial === 'ready' || initial === 'failed') {
+    fetch(`/${PATH_PREFIX}/${DATE_STR}/voice/status`)
+      .then(r => r.json())
+      .then(d => render(d.status || 'idle', d));
+  } else if (initial === 'queued' || initial === 'generating') {
+    poll();
+  }
+})();
+</script>
+<style>
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  #voice-status-icon { display: inline-block; }
+  #voice-status-card[data-status="ready"]      { border-color: var(--green, #3fb950); }
+  #voice-status-card[data-status="failed"]     { border-color: var(--red, #f85149); }
+  #voice-status-card[data-status="generating"],
+  #voice-status-card[data-status="queued"]     { border-color: var(--accent, #58a6ff); }
+</style>
+{% endif %}

@@ -106,8 +106,30 @@ CREATE TABLE IF NOT EXISTS email_templates (
     subject      TEXT    NOT NULL DEFAULT 'SecDigest — {date}',
     html         TEXT    NOT NULL,
     article_html TEXT    NOT NULL,
+    header_html  TEXT    DEFAULT '',
     is_builtin   INTEGER DEFAULT 0,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id            INTEGER PRIMARY KEY,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+    newsletter_id INTEGER NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    vote          TEXT    NOT NULL CHECK (vote IN ('signal','noise')),
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(subscriber_id, newsletter_id)
+);
+
+CREATE TABLE IF NOT EXISTS voice_audio (
+    newsletter_id INTEGER PRIMARY KEY REFERENCES newsletters(id) ON DELETE CASCADE,
+    status        TEXT    NOT NULL DEFAULT 'idle'
+                          CHECK (status IN ('idle','queued','generating','ready','failed')),
+    s3_key        TEXT,
+    duration_sec  INTEGER,
+    voice_text    TEXT,
+    error         TEXT,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -151,7 +173,7 @@ _TMPL_DARK_HTML = """\
 </td></tr>
 {articles}
 <tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -176,7 +198,7 @@ _TMPL_LIGHT_HTML = """\
 <table width="100%" cellpadding="0" cellspacing="0">{articles}</table>
 </td></tr>
 <tr><td style="padding:20px 32px 28px;font-size:.75em;color:#8c959f;border-top:1px solid #e1e4e8;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#8c959f;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -199,7 +221,7 @@ _TMPL_MINIMAL_HTML = """\
 </td></tr>
 {articles}
 <tr><td style="padding-top:32px;font-size:.75em;color:#aaaaaa;border-top:1px solid #eeeeee;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#aaaaaa;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -226,7 +248,7 @@ _TMPL_GRID_HTML = """\
 </table>
 </td></tr>
 <tr><td style="padding-top:20px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -277,7 +299,7 @@ SecDigest daily &mdash; {date} &middot; top security stories, summarised.
 </td></tr>
 {articles}
 <tr><td style="padding:24px 4px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest.<br>
+{feedback_block}You're receiving this because you subscribed to SecDigest.<br>
 <a href="{unsubscribe_url}" style="color:#58a6ff;text-decoration:underline;">Unsubscribe</a>
 </td></tr>
 </table>
@@ -318,7 +340,7 @@ SecDigest daily &mdash; {date} &middot; top security stories, summarised.
 </table>
 </td></tr>
 <tr><td style="padding:18px 20px 22px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7781;border-top:1px solid #e1e4e8;background:#fafbfc;" bgcolor="#fafbfc">
-You're receiving this because you subscribed to SecDigest.<br>
+{feedback_block}You're receiving this because you subscribed to SecDigest.<br>
 <a href="{unsubscribe_url}" style="color:#0969da;text-decoration:underline;">Unsubscribe</a>
 </td></tr>
 </table>
@@ -413,6 +435,9 @@ def init_db():
         _migrate_article_source_name(conn)
         _migrate_subscriber_cadence(conn)
         _migrate_subscriber_confirmation(conn)
+        _migrate_builtin_template_feedback(conn)
+        _migrate_email_template_header(conn)
+        _migrate_header_to_global(conn)
 
 
 def _seed_config(conn):
@@ -630,6 +655,78 @@ def _migrate_add_mobile_templates(conn):
         conn.commit()
 
 
+def _migrate_email_template_header(conn):
+    """Add header_html column to email_templates for older DBs.
+
+    History: this column is a vestige of the original per-template header
+    design. The header is now a single global value stored in config_kv (see
+    `_migrate_header_to_global`), but the column stays in the schema so we
+    don't have to do a destructive table-rebuild migration. New code never
+    reads or writes it; the column is dead but harmless."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(email_templates)").fetchall()}
+    if "header_html" in cols:
+        return
+    conn.execute("ALTER TABLE email_templates ADD COLUMN header_html TEXT DEFAULT ''")
+    conn.commit()
+
+
+def _migrate_header_to_global(conn):
+    """One-shot lift of per-template header_html → global config_kv.header_html.
+
+    The header was briefly modelled as a per-template field; we moved it to a
+    single global value to keep behaviour consistent regardless of which
+    template an admin picks for a given issue. If a previous build wrote a
+    non-empty header_html on any template, copy the first one we find into
+    the global slot so the admin doesn't lose their work, then null out the
+    template column so the dead field can't shadow the real one in any UI
+    that still happens to surface it."""
+    # Only do work if the global value isn't already set.
+    existing = conn.execute(
+        "SELECT value FROM config_kv WHERE key='header_html'"
+    ).fetchone()
+    if existing and (existing[0] or ""):
+        return
+    row = conn.execute(
+        "SELECT id, header_html FROM email_templates "
+        "WHERE header_html IS NOT NULL AND header_html != '' "
+        "ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not row:
+        return
+    conn.execute(
+        "INSERT INTO config_kv(key,value) VALUES('header_html', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (row[1],),
+    )
+    conn.execute("UPDATE email_templates SET header_html='' WHERE header_html IS NOT NULL")
+    conn.commit()
+
+
+def _migrate_builtin_template_feedback(conn):
+    """Inject the {feedback_block} placeholder above the unsubscribe footer in
+    built-in templates that pre-date the feedback feature. The renderer always
+    substitutes the placeholder (with empty string when feedback is disabled),
+    so a missing placeholder just means the buttons never appear."""
+    rows = conn.execute(
+        "SELECT id, html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    for row in rows:
+        if "{feedback_block}" in row[1]:
+            continue
+        # The unsubscribe boilerplate has been a stable sentinel across every
+        # built-in template since the unsubscribe migration landed; placing the
+        # placeholder right before it keeps feedback buttons visually adjacent
+        # to the unsubscribe link in the footer.
+        if "You're receiving this because you subscribed to SecDigest" in row[1]:
+            new_html = row[1].replace(
+                "You're receiving this because you subscribed to SecDigest",
+                "{feedback_block}You're receiving this because you subscribed to SecDigest",
+                1,
+            )
+            conn.execute("UPDATE email_templates SET html=? WHERE id=?", (new_html, row[0]))
+    conn.commit()
+
+
 def _migrate_builtin_template_unsubscribe(conn):
     """Add {unsubscribe_url} footer link to built-in templates that don't have it yet."""
     rows = conn.execute(
@@ -703,6 +800,11 @@ def newsletter_get_or_create(date_str: str, kind: str = "daily",
     return dict(conn.execute(
         "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
     ).fetchone())
+
+
+def newsletter_get_by_id(id: int) -> dict | None:
+    row = _get_conn().execute("SELECT * FROM newsletters WHERE id=?", (id,)).fetchone()
+    return dict(row) if row else None
 
 
 def newsletter_get(date_str: str, kind: str = "daily") -> dict | None:
@@ -1143,6 +1245,106 @@ def subscriber_confirm(token: str) -> dict | None:
     ).fetchone())
 
 
+# ── Feedback (signal / noise) ────────────────────────────────────────────────
+
+def feedback_record(subscriber_id: int, newsletter_id: int, vote: str) -> None:
+    """Upsert a vote — a subscriber can change their mind on a given newsletter,
+    but only the latest vote counts. The (subscriber_id, newsletter_id) UNIQUE
+    constraint enforces one row per pair; ON CONFLICT swaps in the new vote."""
+    if vote not in ("signal", "noise"):
+        raise ValueError(f"feedback_record: bad vote {vote!r}")
+    with _lock:
+        _get_conn().execute(
+            "INSERT INTO feedback(subscriber_id, newsletter_id, vote) VALUES (?,?,?) "
+            "ON CONFLICT(subscriber_id, newsletter_id) "
+            "DO UPDATE SET vote=excluded.vote, created_at=CURRENT_TIMESTAMP",
+            (subscriber_id, newsletter_id, vote),
+        )
+        _get_conn().commit()
+
+
+def feedback_counts_by_subscriber() -> dict[int, dict[str, int]]:
+    """One pass over the feedback table, grouped by subscriber. Returns
+    {sub_id: {'signal': int, 'noise': int}}; subscribers with no feedback are
+    absent from the result (callers should default to zero)."""
+    rows = _get_conn().execute(
+        "SELECT subscriber_id, vote, COUNT(*) AS n FROM feedback "
+        "GROUP BY subscriber_id, vote"
+    ).fetchall()
+    out: dict[int, dict[str, int]] = {}
+    for r in rows:
+        out.setdefault(r["subscriber_id"], {"signal": 0, "noise": 0})[r["vote"]] = r["n"]
+    return out
+
+
+def feedback_for_newsletter(newsletter_id: int) -> dict[str, int]:
+    """Aggregate signal/noise totals for a single newsletter."""
+    rows = _get_conn().execute(
+        "SELECT vote, COUNT(*) AS n FROM feedback WHERE newsletter_id=? GROUP BY vote",
+        (newsletter_id,),
+    ).fetchall()
+    out = {"signal": 0, "noise": 0}
+    for r in rows:
+        out[r["vote"]] = r["n"]
+    return out
+
+
+# ── Voice audio (ElevenLabs TTS → S3) ────────────────────────────────────────
+
+def voice_audio_get(newsletter_id: int) -> dict | None:
+    row = _get_conn().execute(
+        "SELECT * FROM voice_audio WHERE newsletter_id=?", (newsletter_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def voice_audio_upsert(newsletter_id: int, **fields):
+    """Insert or update the row. The status column has a CHECK constraint, so
+    callers passing a bogus status will trip a clean SQLite error instead of
+    silently corrupting state."""
+    allowed = {"status", "s3_key", "duration_sec", "voice_text", "error"}
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"voice_audio_upsert: disallowed columns {bad}")
+    if not fields:
+        return
+    cols = ", ".join(fields)
+    placeholders = ", ".join("?" * len(fields))
+    sets = ", ".join(f"{k}=excluded.{k}" for k in fields)
+    with _lock:
+        _get_conn().execute(
+            f"INSERT INTO voice_audio(newsletter_id, {cols}) "
+            f"VALUES (?, {placeholders}) "
+            f"ON CONFLICT(newsletter_id) DO UPDATE SET {sets}, "
+            f"updated_at=CURRENT_TIMESTAMP",
+            (newsletter_id, *fields.values()),
+        )
+        _get_conn().commit()
+
+
+def voice_audio_clear(newsletter_id: int):
+    """Drop the row so a fresh generation starts from a clean slate."""
+    with _lock:
+        _get_conn().execute(
+            "DELETE FROM voice_audio WHERE newsletter_id=?", (newsletter_id,)
+        )
+        _get_conn().commit()
+
+
+def newsletter_get_voice_enabled(newsletter_id: int) -> bool:
+    """Per-newsletter render flag. Mirrors the TOC pattern: a config_kv row
+    keyed by 'voice_<id>' lets us reuse the existing settings plumbing without
+    bloating the newsletters table."""
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"voice_{newsletter_id}",)
+    ).fetchone()
+    return row[0] == "1" if row else False
+
+
+def newsletter_set_voice_enabled(newsletter_id: int, enabled: bool):
+    cfg_set(f"voice_{newsletter_id}", "1" if enabled else "0")
+
+
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────
 
 def audit_log(operation: str, model: str, input_tokens: int, output_tokens: int,
@@ -1182,10 +1384,12 @@ def email_template_default() -> dict | None:
     return dict(row) if row else None
 
 
-def email_template_create(name: str, description: str, subject: str, html: str, article_html: str) -> dict:
+def email_template_create(name: str, description: str, subject: str, html: str,
+                            article_html: str) -> dict:
     with _lock:
         cur = _get_conn().execute(
-            "INSERT INTO email_templates(name, description, subject, html, article_html) VALUES (?,?,?,?,?)",
+            "INSERT INTO email_templates(name, description, subject, html, article_html) "
+            "VALUES (?,?,?,?,?)",
             (name, description, subject, html, article_html),
         )
         _get_conn().commit()
@@ -1195,6 +1399,9 @@ def email_template_create(name: str, description: str, subject: str, html: str, 
 def email_template_update(id: int, **kwargs):
     if not kwargs:
         return
+    # header_html is intentionally NOT in this allowlist — it lives in
+    # config_kv now (see _migrate_header_to_global). Adding it back here
+    # would re-fork the header content per-template and undo the lift.
     allowed = {"name", "description", "subject", "html", "article_html"}
     bad = set(kwargs) - allowed
     if bad:
@@ -1231,6 +1438,19 @@ def newsletter_get_subject(newsletter_id: int) -> str | None:
 
 def newsletter_set_subject(newsletter_id: int, subject: str):
     cfg_set(f"subject_{newsletter_id}", subject)
+
+
+def newsletter_get_header(newsletter_id: int) -> bool:
+    """Per-newsletter header render flag. Stored under 'header_<id>' in
+    config_kv to keep parity with the TOC + voice toggles."""
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"header_{newsletter_id}",)
+    ).fetchone()
+    return row[0] == "1" if row else False
+
+
+def newsletter_set_header(newsletter_id: int, enabled: bool):
+    cfg_set(f"header_{newsletter_id}", "1" if enabled else "0")
 
 
 def newsletter_get_toc(newsletter_id: int) -> bool:
