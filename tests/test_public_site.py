@@ -66,6 +66,20 @@ async def _post(app, path: str, data: dict):
         return await c.post(path, data=data)
 
 
+# ── Templates parse ──────────────────────────────────────────────────────────
+
+def test_all_public_templates_parse():
+    """Catch syntax errors in landing / thanks / confirmed / unsubscribed before they
+    blow up at request time. Loads each template through Jinja's parser only — no
+    rendering, so missing context vars don't trip the check."""
+    from jinja2 import Environment, FileSystemLoader
+    from pathlib import Path
+    template_dir = Path(__file__).resolve().parents[1] / "secdigest" / "public" / "templates"
+    env = Environment(loader=FileSystemLoader(str(template_dir)))
+    for t in ("landing.html", "thanks.html", "confirmed.html", "unsubscribed.html"):
+        env.get_template(t)
+
+
 # ── Landing page ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -74,10 +88,23 @@ async def test_landing_renders_form(tmp_db, stub_smtp, reset_rate_limits):
     r = await _get(app, "/")
     assert r.status_code == 200
     body = r.text
-    assert "Subscribe" in body
+    assert "subscribe" in body.lower()
     assert 'name="cadence"' in body
     for c in ("daily", "weekly", "monthly"):
         assert f'value="{c}"' in body, f"cadence option {c!r} missing"
+
+
+@pytest.mark.asyncio
+async def test_landing_carries_cyber_chrome(tmp_db, stub_smtp, reset_rate_limits):
+    """The cyberpunk styling depends on a few specific markup hooks (scanlines layer,
+    grid overlay, terminal panel). If someone strips them out, the page goes from
+    Blade Runner to Bootstrap — test that the hooks stay put."""
+    from secdigest.public.app import app
+    r = await _get(app, "/")
+    body = r.text
+    for hook in ('class="scanlines"', 'class="grid-bg"',
+                 'class="terminal"', 'class="terminal-bar"'):
+        assert hook in body, f"missing styling hook: {hook}"
 
 
 # ── Subscribe → pending + confirmation email ────────────────────────────────
