@@ -1,9 +1,14 @@
 """Routes: newsletter day view, archive, fetch, summarize, send, article actions."""
 import asyncio
+import re
 from datetime import date as dt_date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+# Strict canonical ISO date — Python 3.11+'s date.fromisoformat() accepts
+# compact "YYYYMMDD", which we don't want reaching the JS-context renders.
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from secdigest import db, fetcher, summarizer, mailer, periods
 from secdigest.web import templates
@@ -21,7 +26,13 @@ def _validate_date(date_str: str) -> str:
     """Reject anything that isn't a real ISO YYYY-MM-DD before letting it reach
     a template. Path params are dropped into JS contexts in day.html / digest.html;
     Jinja autoescape doesn't cover JS, so we backstop with `|tojson` in the
-    template AND a regex check at the route boundary for defence-in-depth."""
+    template AND a regex check at the route boundary for defence-in-depth.
+
+    Two checks: the regex enforces canonical YYYY-MM-DD format (Python 3.11+'s
+    fromisoformat now accepts compact YYYYMMDD, which we don't want), and the
+    fromisoformat call rejects impossible calendar dates like 2026-13-40."""
+    if not _ISO_DATE_RE.match(date_str):
+        raise HTTPException(status_code=404, detail="Bad date")
     try:
         dt_date.fromisoformat(date_str)
     except ValueError:

@@ -41,6 +41,44 @@ def test_digest_seed_writes_every_selected_article(tmp_db):
     assert {r["id"] for r in rows} == set(aids)
 
 
+class _FlakyConn:
+    """Proxy around a real sqlite3.Connection that raises on the Nth matching
+    INSERT. We can't monkeypatch sqlite3.Connection.execute directly — the
+    method lives in a C extension and the slot is read-only. Wrapping the
+    whole connection in a proxy lets us inject failures while leaving every
+    other method untouched."""
+
+    def __init__(self, real, fail_on_nth_insert: int):
+        self._real = real
+        self._target = fail_on_nth_insert
+        self._insert_count = 0
+
+    def execute(self, sql, params=()):
+        if "INSERT INTO digest_articles" in sql:
+            self._insert_count += 1
+            if self._insert_count == self._target:
+                raise RuntimeError("simulated mid-loop failure")
+        return self._real.execute(sql, params)
+
+    # `with conn:` and `conn.commit()/rollback()` must hit the real connection
+    # so the transaction state is consistent.
+    def __enter__(self):
+        return self._real.__enter__()
+
+    def __exit__(self, *exc):
+        return self._real.__exit__(*exc)
+
+    def commit(self):
+        return self._real.commit()
+
+    def rollback(self):
+        return self._real.rollback()
+
+    # Anything else (cursor, close, executemany, ...) delegates transparently.
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def test_digest_seed_rolls_back_on_mid_loop_failure(tmp_db, monkeypatch):
     """Pre-seed the digest with one article, then have digest_seed fail partway
     through its INSERT loop. The transaction wrapper must roll back the
@@ -55,22 +93,11 @@ def test_digest_seed_rolls_back_on_mid_loop_failure(tmp_db, monkeypatch):
     before = db.digest_article_list(digest["id"])
     assert len(before) == 1
 
-    # Inject a failure on the second INSERT by patching conn.execute. This
-    # mimics e.g. a process kill mid-loop; without `with conn:`, we'd see the
-    # leading DELETE applied + first INSERT partially through, leaving the
-    # digest in a state with fewer rows than before.
-    real_conn = db._get_conn()
-    real_execute = real_conn.execute
-    n_calls = {"insert": 0}
-
-    def flaky_execute(sql, params=()):
-        if "INSERT INTO digest_articles" in sql:
-            n_calls["insert"] += 1
-            if n_calls["insert"] == 2:
-                raise RuntimeError("simulated mid-loop failure")
-        return real_execute(sql, params)
-
-    monkeypatch.setattr(real_conn, "execute", flaky_execute)
+    # Swap the module-level connection out for the flaky proxy. db._get_conn()
+    # returns the cached _conn singleton, so replacing it routes every
+    # subsequent execute through our wrapper.
+    flaky = _FlakyConn(db._conn, fail_on_nth_insert=2)
+    monkeypatch.setattr(db, "_conn", flaky)
 
     with pytest.raises(RuntimeError, match="simulated"):
         db.digest_seed(digest["id"], kind="weekly",
