@@ -47,6 +47,29 @@ def _voice_block_for(newsletter_id: int) -> str:
     return _render_voice_block(url, row.get("duration_sec") or 0)
 
 
+def _voice_block_for_preview(newsletter_id: int) -> str:
+    """Like `_voice_block_for`, but renders a placeholder block whenever the
+    per-newsletter toggle is on — even if audio isn't generated yet — so
+    admins can see the layout while iterating in the email builder.
+
+    When audio IS ready we mint the real presigned URL (so the preview link
+    actually plays); when it isn't, we use a `#` href so the click is a
+    no-op. Either way the visual block matches what subscribers will see."""
+    if db.cfg_get("voice_summary_enabled") != "1":
+        return ""
+    if not db.newsletter_get_voice_enabled(newsletter_id):
+        return ""
+    row = db.voice_audio_get(newsletter_id)
+    if row and row.get("status") == "ready" and row.get("s3_key"):
+        try:
+            from secdigest import voice
+            url = voice.presigned_url(row["s3_key"])
+            return _render_voice_block(url, row.get("duration_sec") or 0)
+        except Exception:
+            pass  # fall through to placeholder
+    return _render_voice_block("#", 0, preview_only=True)
+
+
 def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str]:
     """Internal: open a single SMTP connection and send one message. Used by all the
     higher-level send_* helpers below for one-off transactional mail."""
@@ -164,18 +187,27 @@ def _render_article(article_html: str, a: dict, n: int) -> str:
     return s
 
 
-def _render_voice_block(audio_url: str, duration_sec: int = 0) -> str:
+def _render_voice_block(audio_url: str, duration_sec: int = 0,
+                         preview_only: bool = False) -> str:
     """A single ▶ Listen card that links to a presigned S3 URL. Designed to
     survive aggressive HTML mail clients: pure inline styles, no <audio> tag
     (Gmail strips them), reasonable contrast on both dark and light footers,
     and a single anchor as the click target so screen readers narrate it
     sensibly. The duration label is informational; an empty/zero duration
-    falls back to a generic "audio" label."""
+    falls back to a generic "audio" label.
+
+    When `preview_only=True`, the block visually matches the real send but
+    swaps the duration label for "preview — generate audio to enable" so
+    admins eyeballing the builder know it's a placeholder, not a live link."""
     safe_url = html.escape(audio_url, quote=True)
-    duration_label = ""
-    if duration_sec:
-        m, s = divmod(int(duration_sec), 60)
-        duration_label = f" &middot; {m}:{s:02d}"
+    if preview_only:
+        meta_label = "preview &middot; generate audio to enable"
+    else:
+        duration_label = ""
+        if duration_sec:
+            m, s = divmod(int(duration_sec), 60)
+            duration_label = f" &middot; {m}:{s:02d}"
+        meta_label = f"voice summary{duration_label}"
     return (
         '<tr><td style="padding:18px 4px 6px;">'
         f'<a href="{safe_url}" '
@@ -185,7 +217,7 @@ def _render_voice_block(audio_url: str, duration_sec: int = 0) -> str:
         '<span style="display:inline-block;font-size:1.1em;font-weight:600;">'
         '&#x25B6; Listen to this issue</span>'
         f'<span style="display:inline-block;margin-left:8px;font-size:.85em;opacity:.85;">'
-        f'voice summary{duration_label}</span>'
+        f'{meta_label}</span>'
         '</a>'
         '<div style="font-size:.7em;color:#8b949e;margin-top:6px;text-align:right;">'
         'Voice by '

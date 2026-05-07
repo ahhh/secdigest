@@ -182,8 +182,11 @@ async def day_preview(request: Request, date_str: str, template_id: int = 0, inc
     if not any(a.get("included", 1) for a in articles):
         return _placeholder("No included articles yet — add them in the Curator tab.")
     tid = template_id or None
+    voice_block = mailer._voice_block_for_preview(newsletter["id"])
     return HTMLResponse(
-        mailer.render_email_html(newsletter, articles, tid, include_toc=bool(include_toc)),
+        mailer.render_email_html(newsletter, articles, tid,
+                                 include_toc=bool(include_toc),
+                                 voice_block=voice_block),
         headers=_preview_headers,
     )
 

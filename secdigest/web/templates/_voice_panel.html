@@ -86,6 +86,11 @@
     return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
+  // Track previous status so we can refresh the preview iframe exactly once
+  // when a build finishes — without that, the admin still sees the
+  // "preview — generate audio to enable" placeholder until they click Refresh.
+  let prevStatus = card.dataset.status || 'idle';
+
   function render(status, payload) {
     const state = STATES[status] || STATES.idle;
     icon.textContent = state.icon;
@@ -95,6 +100,10 @@
       label = `Ready — ${fmtDuration(payload.duration)}`;
     }
     text.textContent = label;
+    if (status === 'ready' && prevStatus !== 'ready') {
+      if (typeof window.reloadPreview === 'function') window.reloadPreview();
+    }
+    prevStatus = status;
     card.dataset.status = status;
     if (status === 'failed' && payload && payload.error) {
       errEl.textContent = payload.error;
@@ -150,6 +159,10 @@
       method: 'POST',
       headers: {'X-CSRF-Token': CSRF},
       body: fd,
+    }).then(() => {
+      // Reflect the toggle in the preview immediately — when on, the block
+      // appears (real or placeholder); when off, it disappears.
+      if (typeof window.reloadPreview === 'function') window.reloadPreview();
     });
   };
 

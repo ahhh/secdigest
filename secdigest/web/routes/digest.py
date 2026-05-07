@@ -251,9 +251,11 @@ async def _preview(request: Request, kind: str, date_str: str,
     articles = db.digest_article_list(digest["id"])
     if not any(a.get("included", 1) for a in articles):
         return _placeholder("No included articles — toggle some on in the curator.")
+    voice_block = mailer._voice_block_for_preview(digest["id"])
     return HTMLResponse(
         mailer.render_email_html(digest, articles, template_id or None,
-                                 include_toc=bool(include_toc)),
+                                 include_toc=bool(include_toc),
+                                 voice_block=voice_block),
         headers=_PREVIEW_HEADERS,
     )
 

@@ -39,6 +39,11 @@ _BYTES_PER_SECOND_128KBPS = 16_000
 # Hard cap on the text we send to ElevenLabs. Their character pricing is
 # linear, and a runaway feed item shouldn't be able to drain the budget.
 _MAX_TEXT_CHARS = 2_500
+# Per-article summary cap inside the voice script. Keeps narration digestible
+# (full summaries are 2-3 sentences; we want a one-liner) and bounds the worst
+# case at 8 stories × ~180 chars ≈ 1.5kB before framing — comfortably under
+# _MAX_TEXT_CHARS without needing a second-pass truncate.
+_MAX_SUMMARY_CHARS_VOICE = 180
 
 _REDACT_KEYS = ("api_key", "access_key", "secret", "password", "token")
 
@@ -63,11 +68,38 @@ def _redact(value: str) -> str:
 
 # ── Text composition ────────────────────────────────────────────────────────
 
+def _trim_summary_for_voice(summary: str, max_chars: int = _MAX_SUMMARY_CHARS_VOICE) -> str:
+    """Pick a narrator-friendly slice of a written summary.
+
+    Strategy: prefer the first complete sentence; fall back to a hard truncate
+    on a word boundary. We don't want a half-sentence trailing into the next
+    article's intro line, so an ellipsis is appended only when we cut mid-thought.
+    """
+    if not summary:
+        return ""
+    s = " ".join(summary.split())  # collapse whitespace/newlines for narration
+    if len(s) <= max_chars:
+        return s
+    # First-sentence-fits-the-budget path
+    end = -1
+    for i, ch in enumerate(s[:max_chars]):
+        if ch in ".!?" and i + 1 < len(s) and s[i + 1] in (" ", "\t"):
+            end = i + 1
+    if end > 0:
+        return s[:end]
+    # No clean sentence break — truncate at a word boundary with an ellipsis
+    cut = s.rfind(" ", 0, max_chars)
+    if cut <= 0:
+        cut = max_chars
+    return s[:cut].rstrip() + "…"
+
+
 def compose_voice_text(newsletter: dict, articles: list[dict],
                         kind: str = "daily") -> str:
-    """Build the script we send to ElevenLabs. Kept short on purpose — we want
-    a 20–45s voice intro, not a full audiobook of every summary. Each article
-    is reduced to its title; subscribers who want the details click through."""
+    """Build the script we send to ElevenLabs. Kept under ~45s of narration on
+    purpose — long enough to land each story, short enough that subscribers
+    actually finish it. Each story gets a title line plus a one-sentence cut
+    of its summary; full summaries are too long to listen to back-to-back."""
     included = [a for a in articles if a.get("included", 1)]
     if not included:
         return ""
@@ -82,8 +114,12 @@ def compose_voice_text(newsletter: dict, articles: list[dict],
              f"{n} {plural} in {label} issue."]
     for i, a in enumerate(included[:8], 1):
         title = (a.get("title") or "").strip().rstrip(".")
-        if title:
-            parts.append(f"Story {i}: {title}.")
+        if not title:
+            continue
+        parts.append(f"Story {i}: {title}.")
+        summary = _trim_summary_for_voice(a.get("summary") or "")
+        if summary:
+            parts.append(summary)
     if len(included) > 8:
         parts.append(f"And {len(included) - 8} more.")
 

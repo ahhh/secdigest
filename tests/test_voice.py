@@ -117,18 +117,75 @@ def test_voice_audio_upsert_rejects_unknown_column(tmp_db):
 # ── Text composition ───────────────────────────────────────────────────────
 
 def test_compose_voice_text_uses_titles_and_caps_to_eight(tmp_db):
+    """Titles use NATO words to avoid colliding with the 'Story N:' label
+    format the composer emits — otherwise 'Story 8' appears as a label even
+    when only 8 articles are included, masking off-by-one bugs in the cap."""
     n = db.newsletter_get_or_create("2026-05-04")
-    for i in range(12):
+    nato = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+            "golf", "hotel", "india", "juliet", "kilo", "lima"]
+    for i, name in enumerate(nato):
         db.article_insert(
-            newsletter_id=n["id"], hn_id=None, title=f"Story {i}",
+            newsletter_id=n["id"], hn_id=None, title=name,
             url=f"https://x/{i}", hn_score=0, hn_comments=0,
             relevance_score=9 - i * 0.1, relevance_reason="r", position=i, included=1,
         )
     text = voice.compose_voice_text(n, db.article_list(n["id"]))
     assert "12 stories" in text
-    assert "Story 0" in text and "Story 7" in text
-    assert "Story 8" not in text  # capped at 8 in the spoken list
+    assert "alpha" in text and "hotel" in text  # first 8 included
+    assert "india" not in text and "lima" not in text  # past the cap
     assert "And 4 more" in text
+
+
+def test_compose_voice_text_includes_article_summaries(tmp_db):
+    """The narrator should read each article's short summary alongside its
+    title — voice subscribers shouldn't have to click through just to know
+    what the story is about."""
+    n = db.newsletter_get_or_create("2026-05-04")
+    db.article_insert(
+        newsletter_id=n["id"], hn_id=None, title="Critical CVE in libfoo",
+        url="https://x/a", hn_score=0, hn_comments=0,
+        relevance_score=9.0, relevance_reason="r", position=0, included=1,
+    )
+    db.article_update(1, summary="Remote code execution affecting libfoo 1.0–2.3. Patch landed.")
+    text = voice.compose_voice_text(n, db.article_list(n["id"]))
+    assert "Critical CVE in libfoo" in text
+    assert "Remote code execution" in text
+
+
+def test_compose_voice_text_trims_long_summaries(tmp_db):
+    """Per-article summaries get capped so the total script stays under the
+    overall char budget without relying on a tail truncate that could chop
+    a sentence mid-word."""
+    n = db.newsletter_get_or_create("2026-05-04")
+    db.article_insert(
+        newsletter_id=n["id"], hn_id=None, title="t",
+        url="https://x", hn_score=0, hn_comments=0,
+        relevance_score=9.0, relevance_reason="r", position=0, included=1,
+    )
+    long_summary = "Sentence one. " + ("padding " * 100)
+    db.article_update(1, summary=long_summary)
+    text = voice.compose_voice_text(n, db.article_list(n["id"]))
+    # Either the first sentence fits or the trimmed slice ends with an ellipsis
+    assert "Sentence one." in text or "…" in text
+    assert "padding " * 80 not in text
+
+
+def test_trim_summary_prefers_sentence_boundary():
+    short = "First sentence here. Second one trails."
+    out = voice._trim_summary_for_voice(short, max_chars=180)
+    # Short input passes through unchanged
+    assert out == short
+
+    # Truncation at sentence boundary, no ellipsis when we got a clean cut
+    sample = "First sentence. " + "x" * 500
+    out = voice._trim_summary_for_voice(sample, max_chars=50)
+    assert out == "First sentence."
+
+    # No sentence break in budget → word-boundary truncate with ellipsis
+    no_period = "word " * 100
+    out = voice._trim_summary_for_voice(no_period, max_chars=30)
+    assert out.endswith("…")
+    assert " word" not in out[-3:]  # didn't cut mid-word
 
 
 def test_compose_voice_text_empty_when_no_included(tmp_db):
@@ -358,6 +415,75 @@ def test_voice_block_for_empty_when_presign_fails(tmp_db, monkeypatch):
         raise RuntimeError("S3 unreachable")
     monkeypatch.setattr(voice, "presigned_url", boom)
     assert mailer._voice_block_for(n["id"]) == ""
+
+
+def test_voice_block_for_preview_shows_placeholder_when_audio_missing(tmp_db):
+    """The builder iframe should reflect the toggle even when audio hasn't
+    been generated yet — admins iterate on layout BEFORE spending ElevenLabs
+    credits, so we render a non-functional placeholder instead of nothing."""
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    block = mailer._voice_block_for_preview(n["id"])
+    assert "Listen to this issue" in block
+    assert "preview" in block.lower()
+    # Placeholder href is a no-op anchor — no real S3 URL minted
+    assert 'href="#"' in block
+
+
+def test_voice_block_for_preview_uses_real_url_when_ready(tmp_db, monkeypatch):
+    """When audio IS ready the preview should match the real send exactly,
+    so the admin sees the live presigned URL (and can click to verify)."""
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k.mp3", duration_sec=42)
+    monkeypatch.setattr(voice, "presigned_url",
+                        lambda key, **kw: f"https://fake/{key}")
+    block = mailer._voice_block_for_preview(n["id"])
+    assert "https://fake/k.mp3" in block
+    assert "0:42" in block
+    assert "preview" not in block.lower()
+
+
+def test_voice_block_for_preview_empty_when_disabled(tmp_db):
+    """Toggle off (per-newsletter or master) should suppress the preview block
+    entirely — otherwise the iframe diverges from what would actually send."""
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], False)
+    assert mailer._voice_block_for_preview(n["id"]) == ""
+
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.cfg_set("voice_summary_enabled", "0")
+    assert mailer._voice_block_for_preview(n["id"]) == ""
+
+
+async def test_day_preview_renders_voice_placeholder(admin_client):
+    """End-to-end: hit the actual /day/{date}/preview route and confirm the
+    iframe HTML carries the voice block when the toggle is on."""
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    r = await admin_client.get("/day/2026-05-04/preview")
+    assert r.status_code == 200
+    assert "Listen to this issue" in r.text
+
+
+def test_voice_block_for_preview_renders_when_presign_fails(tmp_db, monkeypatch):
+    """If audio is ready but S3 minting throws (rotated creds, etc.) the
+    preview should still show SOMETHING — the placeholder — rather than a
+    silent disappearance that misleads the admin into thinking the toggle
+    isn't taking effect."""
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k.mp3")
+    monkeypatch.setattr(voice, "presigned_url",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    block = mailer._voice_block_for_preview(n["id"])
+    assert "Listen to this issue" in block
+    assert "preview" in block.lower()
 
 
 def test_voice_block_for_renders_when_all_aligned(tmp_db, monkeypatch):
