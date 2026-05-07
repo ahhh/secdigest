@@ -167,6 +167,38 @@ def test_send_fails_when_from_is_example_dot_com(tmp_db, stub_smtp):
     assert "example.com" in msg.lower() or "from" in msg.lower()
 
 
+# ── Header sanitisation (M4) ─────────────────────────────────────────────────
+
+@pytest.mark.parametrize("hostile,expected", [
+    ("Hello\r\nBcc: attacker@x", "HelloBcc: attacker@x"),
+    ("Multi\nline\nsubject",     "Multilinesubject"),
+    ("\r\n\r\nbomb",             "bomb"),
+    ("normal subject",           "normal subject"),
+    ("",                         ""),
+    (None,                       ""),
+])
+def test_sanitize_header_strips_cr_lf(hostile, expected):
+    """The single-boundary sanitiser must remove every \\r and \\n. Header
+    injection via CRLF is the whole reason this helper exists."""
+    assert mailer._sanitize_header(hostile) == expected
+
+
+def test_send_newsletter_subject_with_crlf_does_not_break_headers(tmp_db, stub_smtp):
+    """End-to-end: an admin-saved subject containing CRLF must not produce a
+    multi-line Subject header in the outbound message."""
+    n, _ = _seed_daily()
+    db.newsletter_set_subject(n["id"], "Daily\r\nBcc: attacker@evil")
+    db.subscriber_create("a@test.invalid")
+
+    ok, _ = mailer.send_newsletter("2026-05-04", kind="daily")
+    assert ok
+    assert any("a@test.invalid" in m["to"] for m in stub_smtp)
+    # Recorded subject is whatever made it onto the MIME header
+    sent_subject = stub_smtp[-1]["subject"]
+    assert "\r" not in sent_subject and "\n" not in sent_subject
+    assert "Bcc:" in sent_subject  # the literal text remains; CRLF is stripped
+
+
 # ── Confirmation email (transactional path) ──────────────────────────────────
 
 def test_send_confirmation_email_records_link(tmp_db, stub_smtp):

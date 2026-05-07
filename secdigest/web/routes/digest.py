@@ -37,6 +37,11 @@ def _kind_label(kind: str) -> str:
 async def _digest_view(request: Request, kind: str, date_str: str):
     if not is_authed(request):
         return redirect_login()
+    # date_str is reflected into JS via the digest.html <script> tag; backstop
+    # the |tojson template filter with a route-level regex check so a malformed
+    # date 404s before reaching the template at all.
+    from secdigest.web.routes.newsletter import _validate_date
+    _validate_date(date_str)
     period_start, period_end = _bounds(kind, date_str)
     digest = _ensure_digest(kind, period_start, period_end)
     # Auto-seed on first visit when the digest is empty

@@ -9,6 +9,19 @@ from email.mime.text import MIMEText
 from secdigest import db, crypto
 
 
+def _sanitize_header(value: str) -> str:
+    """Strip CR/LF from any string that's about to land in an SMTP header.
+
+    SMTP headers are CRLF-terminated; smuggling \\r\\n into a Subject or From
+    header lets an attacker inject arbitrary headers (BCC themselves, change
+    Reply-To, etc.). We apply this at one boundary — right before composing
+    the MIME message — so callers don't have to remember to strip after every
+    intermediate mutation (template-substitution, decryption, etc.)."""
+    if value is None:
+        return ""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str]:
     """Internal: open a single SMTP connection and send one message. Used by all the
     higher-level send_* helpers below for one-off transactional mail."""
@@ -20,11 +33,11 @@ def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> t
     if "example.com" in smtp_from:
         return False, "From address not configured"
 
-    to_email = (to_email or "").replace("\r", "").replace("\n", "").strip()
+    to_email = _sanitize_header(to_email).strip()
     if not to_email or "@" not in to_email:
         return False, "Invalid recipient"
-    subject = subject.replace("\r", "").replace("\n", "")
-    smtp_from = smtp_from.replace("\r", "").replace("\n", "")
+    subject = _sanitize_header(subject)
+    smtp_from = _sanitize_header(smtp_from)
 
     port = int(cfg.get("smtp_port", 587))
     smtp_user = cfg.get("smtp_user", "")
@@ -234,7 +247,7 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
     if not any(a.get("included", 1) for a in articles):
         return False, "No included articles to send"
 
-    recipient = (recipient or "").replace("\r", "").replace("\n", "").strip()
+    recipient = _sanitize_header(recipient).strip()
     if not recipient or "@" not in recipient:
         return False, "Invalid recipient email"
 
@@ -251,8 +264,10 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
     if "example.com" in smtp_from:
         return False, "From address is not configured (still using example.com)"
-    subject = subject.replace("\r", "").replace("\n", "")
-    smtp_from = smtp_from.replace("\r", "").replace("\n", "")
+    # Single sanitisation point — applies after the {date} substitution above so
+    # CRLF in either the subject template or the override gets stripped.
+    subject = _sanitize_header(subject)
+    smtp_from = _sanitize_header(smtp_from)
 
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
     include_toc = db.newsletter_get_toc(newsletter["id"])
@@ -319,9 +334,10 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
     if "example.com" in smtp_from:
         return False, "From address is not configured (still using example.com)"
-    # Strip CRLF to prevent header injection
-    subject = subject.replace("\r", "").replace("\n", "")
-    smtp_from = smtp_from.replace("\r", "").replace("\n", "")
+    # Single sanitisation boundary — applies after every mutation above (template
+    # substitution, override fallback) so CRLF is stripped from the final value.
+    subject = _sanitize_header(subject)
+    smtp_from = _sanitize_header(smtp_from)
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
     include_toc = db.newsletter_get_toc(newsletter["id"])
 
@@ -349,7 +365,7 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
                 unsub_url = f"{base_url}/unsubscribe/{token}" if token else ""
                 html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url, include_toc=include_toc)
                 text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
-                to_email = (sub["email"] or "").replace("\r", "").replace("\n", "").strip()
+                to_email = _sanitize_header(sub["email"]).strip()
                 if not to_email or "@" not in to_email:
                     errors.append(f"{sub['email']}: invalid email")
                     continue

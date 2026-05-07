@@ -237,7 +237,7 @@
 
 <script>
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
-const dateStr = '{{ date_str }}';
+const dateStr = {{ date_str | tojson }};
 let currentTemplateId = {{ active_template_id or 'null' }};
 let currentTemplateData = {};
 
@@ -444,7 +444,7 @@ function appendFields(form, fields) {
 
 <script>
 const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]').content;
-const dateStr = '{{ date_str }}';
+const dateStr = {{ date_str | tojson }};
 
 function toggleAddArticle() {
   const panel = document.getElementById('add-article-panel');

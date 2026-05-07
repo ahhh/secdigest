@@ -37,11 +37,31 @@ def is_safe_external_url(url: str) -> bool:
     return True
 
 
-# ── Login rate limiting ─────────────────────────────────────────────────────
+# ── Per-IP rate limiting (login + subscribe + unsubscribe) ─────────────────
+#
+# Sliding-window buckets keyed by client IP. The buckets share the same
+# implementation; they're separate dicts so a brute-force login spree can't
+# starve the subscribe flow on a shared NAT'd IP, and so each can carry its
+# own threshold/window.
+#
+# Memory bound: each bucket prunes both stale timestamps AND empty keys on
+# every access, so the dict only ever holds IPs with at least one attempt in
+# the current window. As a defensive cap (in case a flood of unique IPs
+# arrives faster than the cleanup pace), if a bucket grows past
+# _BUCKET_MAX_KEYS we run a full sweep before accepting more entries.
 
-_LOGIN_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
-_LOGIN_WINDOW_SECONDS = 900  # 15 minutes
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_SUBSCRIBE_ATTEMPTS: dict[str, list[float]] = {}
+_UNSUBSCRIBE_ATTEMPTS: dict[str, list[float]] = {}
+
+_LOGIN_WINDOW_SECONDS = 900           # 15 minutes
 _LOGIN_MAX_ATTEMPTS = 10
+_SUBSCRIBE_WINDOW_SECONDS = 3600      # 1 hour
+_SUBSCRIBE_MAX = 5
+_UNSUBSCRIBE_WINDOW_SECONDS = 3600
+_UNSUBSCRIBE_MAX = 10
+
+_BUCKET_MAX_KEYS = 10_000             # absolute cap before a forced sweep
 
 
 def _client_ip(request: Request) -> str:
@@ -51,44 +71,48 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _bucket_allowed(bucket: dict, ip: str, window: int, limit: int) -> bool:
+    """Prune stale timestamps for `ip`, drop the key if its list is empty,
+    return whether the IP is still under `limit` attempts in `window` seconds."""
+    cutoff = time() - window
+    attempts = [t for t in bucket.get(ip, ()) if t > cutoff]
+    if attempts:
+        bucket[ip] = attempts
+    else:
+        bucket.pop(ip, None)
+    return len(attempts) < limit
+
+
+def _bucket_record(bucket: dict, ip: str, window: int) -> None:
+    """Append a timestamp; trigger a full-sweep cleanup if the dict has grown
+    past the safety cap (an indicator that something pathological is going on,
+    e.g. an attacker spraying unique IPs faster than the natural eviction)."""
+    bucket.setdefault(ip, []).append(time())
+    if len(bucket) > _BUCKET_MAX_KEYS:
+        _bucket_sweep(bucket, window)
+
+
+def _bucket_sweep(bucket: dict, window: int) -> None:
+    """Drop every IP whose attempts are entirely outside the current window."""
+    cutoff = time() - window
+    stale = [ip for ip, ts in bucket.items() if not any(t > cutoff for t in ts)]
+    for ip in stale:
+        del bucket[ip]
+
+
+# ── Public bucket APIs ──────────────────────────────────────────────────────
+
 def login_allowed(request: Request) -> bool:
-    """Check if the requesting IP is below the failed-login threshold."""
-    ip = _client_ip(request)
-    now = time()
-    cutoff = now - _LOGIN_WINDOW_SECONDS
-    attempts = _LOGIN_ATTEMPTS[ip]
-    attempts[:] = [t for t in attempts if t > cutoff]
-    return len(attempts) < _LOGIN_MAX_ATTEMPTS
+    return _bucket_allowed(_LOGIN_ATTEMPTS, _client_ip(request),
+                            _LOGIN_WINDOW_SECONDS, _LOGIN_MAX_ATTEMPTS)
 
 
 def login_record_failure(request: Request) -> None:
-    ip = _client_ip(request)
-    _LOGIN_ATTEMPTS[ip].append(time())
+    _bucket_record(_LOGIN_ATTEMPTS, _client_ip(request), _LOGIN_WINDOW_SECONDS)
 
 
 def login_clear(request: Request) -> None:
-    ip = _client_ip(request)
-    _LOGIN_ATTEMPTS.pop(ip, None)
-
-
-# ── Public-site rate limiting ───────────────────────────────────────────────
-#
-# Sliding-window per-IP buckets, distinct from the login limiter so a brute-force
-# login spree doesn't lock out subscribe flows on the same shared IP. Thresholds
-# are intentionally generous — these are anti-spam, not anti-DoS.
-
-_SUBSCRIBE_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
-_UNSUBSCRIBE_ATTEMPTS: dict[str, list[float]] = defaultdict(list)
-_SUBSCRIBE_WINDOW_SECONDS = 3600   # 1 hour
-_SUBSCRIBE_MAX = 5
-_UNSUBSCRIBE_WINDOW_SECONDS = 3600
-_UNSUBSCRIBE_MAX = 10
-
-
-def _bucket_allowed(bucket: dict, ip: str, window: int, limit: int) -> bool:
-    cutoff = time() - window
-    bucket[ip] = [t for t in bucket[ip] if t > cutoff]
-    return len(bucket[ip]) < limit
+    _LOGIN_ATTEMPTS.pop(_client_ip(request), None)
 
 
 def subscribe_allowed(request: Request) -> bool:
@@ -97,7 +121,7 @@ def subscribe_allowed(request: Request) -> bool:
 
 
 def subscribe_record(request: Request) -> None:
-    _SUBSCRIBE_ATTEMPTS[_client_ip(request)].append(time())
+    _bucket_record(_SUBSCRIBE_ATTEMPTS, _client_ip(request), _SUBSCRIBE_WINDOW_SECONDS)
 
 
 def unsubscribe_allowed(request: Request) -> bool:
@@ -106,4 +130,4 @@ def unsubscribe_allowed(request: Request) -> bool:
 
 
 def unsubscribe_record(request: Request) -> None:
-    _UNSUBSCRIBE_ATTEMPTS[_client_ip(request)].append(time())
+    _bucket_record(_UNSUBSCRIBE_ATTEMPTS, _client_ip(request), _UNSUBSCRIBE_WINDOW_SECONDS)

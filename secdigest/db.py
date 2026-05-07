@@ -963,13 +963,19 @@ def digest_seed(digest_id: int, kind: str, period_start: str, period_end: str, t
 
     with _lock:
         conn = _get_conn()
-        conn.execute("DELETE FROM digest_articles WHERE digest_id=?", (digest_id,))
-        for pos, a in enumerate(selected):
-            conn.execute(
-                "INSERT INTO digest_articles(digest_id, article_id, position, included) VALUES (?,?,?,1)",
-                (digest_id, a["id"], pos),
-            )
-        conn.commit()
+        # `with conn:` runs the block inside an implicit transaction, committing
+        # on clean exit and rolling back on any exception. Without this, a crash
+        # mid-loop leaves the digest half-populated — the count is non-zero so
+        # the next visit skips re-seeding, and the user sees a partial digest
+        # indefinitely.
+        with conn:
+            conn.execute("DELETE FROM digest_articles WHERE digest_id=?", (digest_id,))
+            for pos, a in enumerate(selected):
+                conn.execute(
+                    "INSERT INTO digest_articles(digest_id, article_id, position, included) "
+                    "VALUES (?,?,?,1)",
+                    (digest_id, a["id"], pos),
+                )
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────

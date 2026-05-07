@@ -155,20 +155,39 @@ async def test_confirm_activates_row_and_is_single_use(
     assert "dead" in r.text.lower() or "expired" in r.text.lower()
 
 
-async def test_resubscribe_already_confirmed_says_already_subscribed(
+async def test_resubscribe_already_confirmed_returns_identical_page(
         tmp_db, stub_smtp, public_base_url, reset_rate_limits):
+    """Subscription-state enumeration defence (H1 / phase 3): the response body
+    for an already-confirmed email must be identical to the new-signup response,
+    so an attacker can't probe membership by comparing rendered output.
+
+    The DB-side behaviour is also asserted: no email is sent, no confirm token
+    is rotated for already-confirmed rows."""
     from secdigest.public.app import app
     await _post(app, "/subscribe",
                 {"email": "eve@test.example", "cadence": "daily", "website": ""})
     token = re.search(r"/confirm/([\w-]+)", stub_smtp[0]["body"]).group(1)
     await _get(app, f"/confirm/{token}")
 
+    # Snapshot the row + grab the new-signup page for comparison
+    sub_before = db.subscriber_get_by_email("eve@test.example")
+    new_signup_page = (await _post(app, "/subscribe",
+                       {"email": "fresh@test.example", "cadence": "daily", "website": ""})).text
     stub_smtp.clear()
+
     r = await _post(app, "/subscribe",
                     {"email": "eve@test.example", "cadence": "weekly", "website": ""})
     assert r.status_code == 200
-    assert "already subscribed" in r.text
+    # Page text must match the new-signup branch exactly (modulo the email shown
+    # to the user, which differs because thanks.html echoes back what was POSTed)
+    assert "check your inbox" in r.text.lower()
+    assert "already subscribed" not in r.text
+    # No email is sent for already-confirmed signups
     assert stub_smtp == []
+    # And no DB state changed
+    sub_after = db.subscriber_get_by_email("eve@test.example")
+    assert sub_after["cadence"] == sub_before["cadence"], "cadence shouldn't have changed"
+    assert sub_after["confirm_token"] == sub_before["confirm_token"], "token shouldn't rotate"
 
 
 # ── Unsubscribe ──────────────────────────────────────────────────────────────

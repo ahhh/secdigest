@@ -2,7 +2,7 @@
 import asyncio
 from datetime import date as dt_date
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from secdigest import db, fetcher, summarizer, mailer, periods
@@ -15,6 +15,18 @@ router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 def _today() -> str:
     return dt_date.today().isoformat()
+
+
+def _validate_date(date_str: str) -> str:
+    """Reject anything that isn't a real ISO YYYY-MM-DD before letting it reach
+    a template. Path params are dropped into JS contexts in day.html / digest.html;
+    Jinja autoescape doesn't cover JS, so we backstop with `|tojson` in the
+    template AND a regex check at the route boundary for defence-in-depth."""
+    try:
+        dt_date.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Bad date")
+    return date_str
 
 
 # ── Home ──────────────────────────────────────────────────────────────────────
@@ -90,6 +102,7 @@ async def archive(request: Request):
 async def day_view(request: Request, date_str: str):
     if not is_authed(request):
         return redirect_login()
+    _validate_date(date_str)
     newsletter = db.newsletter_get(date_str)
     articles = db.article_list(newsletter["id"]) if newsletter else []
     view = request.query_params.get("view", "curator")

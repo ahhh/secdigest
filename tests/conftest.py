@@ -254,9 +254,21 @@ def stub_httpx(monkeypatch):
     Returns a knob; tests use it like:
         knob.route("hacker-news/topstories.json", json_data=[1, 2, 3])
         knob.route("/item/1.json", json_data={"id": 1, "title": "..."})
+
+    Important: tests that drive a FastAPI app via httpx use the same
+    httpx.AsyncClient class — but they pass `transport=ASGITransport(app=...)`,
+    which means they want the *real* httpx behaviour, not a canned-response
+    stub. The fake classes below detect that case and pass through to the real
+    httpx implementation. Only application code making genuine outbound calls
+    (no transport kwarg) gets the offline fake.
     """
     import httpx
     knob = _HttpxKnob()
+
+    # Capture real classes BEFORE we replace them so the pass-through path can
+    # delegate to them.
+    _RealAsyncClient = httpx.AsyncClient
+    _RealSyncClient = httpx.Client
 
     class FakeResponse:
         def __init__(self, status, json_data, text):
@@ -276,36 +288,58 @@ def stub_httpx(monkeypatch):
     def _build(resp_dict):
         return FakeResponse(resp_dict["status"], resp_dict["json_data"], resp_dict["text"])
 
+    def _is_asgi(kwargs):
+        """A test calling AsyncClient(transport=ASGITransport(app=...)) wants the
+        real httpx — it's testing the FastAPI app, not making outbound calls."""
+        t = kwargs.get("transport")
+        return t is not None and t.__class__.__name__ == "ASGITransport"
+
     class FakeAsyncClient:
         def __init__(self, **kwargs):
-            pass
+            self._delegate = _RealAsyncClient(**kwargs) if _is_asgi(kwargs) else None
 
         async def __aenter__(self):
+            if self._delegate is not None:
+                return await self._delegate.__aenter__()
             return self
 
         async def __aexit__(self, *exc):
+            if self._delegate is not None:
+                return await self._delegate.__aexit__(*exc)
             return False
 
         async def get(self, url, **kwargs):
+            if self._delegate is not None:
+                return await self._delegate.get(url, **kwargs)
             return _build(knob.lookup(url))
 
         async def post(self, url, **kwargs):
+            if self._delegate is not None:
+                return await self._delegate.post(url, **kwargs)
             return _build(knob.lookup(url))
 
     class FakeSyncClient:
         def __init__(self, **kwargs):
-            pass
+            self._delegate = _RealSyncClient(**kwargs) if _is_asgi(kwargs) else None
 
         def __enter__(self):
+            if self._delegate is not None:
+                return self._delegate.__enter__()
             return self
 
         def __exit__(self, *exc):
+            if self._delegate is not None:
+                return self._delegate.__exit__(*exc)
             return False
 
         def get(self, url, **kwargs):
+            if self._delegate is not None:
+                return self._delegate.get(url, **kwargs)
             return _build(knob.lookup(url))
 
         def post(self, url, **kwargs):
+            if self._delegate is not None:
+                return self._delegate.post(url, **kwargs)
             return _build(knob.lookup(url))
 
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)

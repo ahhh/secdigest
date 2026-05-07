@@ -70,33 +70,35 @@ async def subscribe(request: Request,
         cadence = "daily"
 
     sub = db.subscriber_get_by_email(email_clean)
-    if sub and sub.get("confirmed") and sub.get("active"):
-        return templates.TemplateResponse("landing.html", {
-            "request": request,
-            "message": "You're already subscribed.",
-            "status": "ok",
-        })
 
-    confirm_token = str(uuid.uuid4())
-    if sub:
-        # Re-issue confirmation: caller may have lost the previous email, or wants to
-        # change cadence. Don't auto-activate yet — they still have to click the link.
-        db.subscriber_set_confirm_token(sub["id"], confirm_token)
-        db.subscriber_update(sub["id"], cadence=cadence)
-    else:
-        db.subscriber_create_pending(email_clean, cadence, confirm_token)
+    # Subscriber-state-dependent response branches all converge on the same
+    # thanks.html page so an attacker can't enumerate who's on the list by
+    # comparing response bodies. Three cases:
+    #   • already-confirmed → no DB change, no email, render thanks.html
+    #   • already-pending   → re-issue confirm token, resend the email
+    #   • brand new         → create pending row, send confirm email
+    already_confirmed = bool(sub and sub.get("confirmed") and sub.get("active"))
 
-    confirm_url = f"{_public_base_url()}/confirm/{confirm_token}"
-    ok, smtp_msg = mailer.send_confirmation_email(email_clean, confirm_url)
-    if not ok:
-        # Log it, but don't reveal SMTP details to the public. The admin can resend
-        # by inspecting the row and re-triggering.
-        print(f"[public] confirmation email failed for {email_clean}: {smtp_msg}")
-        return templates.TemplateResponse("landing.html", {
-            "request": request,
-            "message": "We couldn't send the confirmation email right now. Please try again in a few minutes.",
-            "status": "error",
-        }, status_code=503)
+    if not already_confirmed:
+        confirm_token = str(uuid.uuid4())
+        if sub:
+            db.subscriber_set_confirm_token(sub["id"], confirm_token)
+            db.subscriber_update(sub["id"], cadence=cadence)
+        else:
+            db.subscriber_create_pending(email_clean, cadence, confirm_token)
+
+        confirm_url = f"{_public_base_url()}/confirm/{confirm_token}"
+        ok, smtp_msg = mailer.send_confirmation_email(email_clean, confirm_url)
+        if not ok:
+            # Log it generically and surface a vague failure. Don't echo SMTP
+            # error text to the user (info leak) and don't differentiate from
+            # the success page in a way that leaks subscription state.
+            print(f"[public] confirmation email failed for {email_clean}: {smtp_msg}")
+            return templates.TemplateResponse("landing.html", {
+                "request": request,
+                "message": "We couldn't send the confirmation email right now. Please try again in a few minutes.",
+                "status": "error",
+            }, status_code=503)
 
     return templates.TemplateResponse("thanks.html", {
         "request": request,

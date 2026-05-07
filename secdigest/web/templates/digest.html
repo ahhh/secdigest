@@ -132,8 +132,8 @@
 </div>
 
 <script>
-const dateStr = '{{ date_str }}';
-const baseUrl = '/{{ "week" if kind == "weekly" else "month" }}/{{ date_str }}';
+const dateStr = {{ date_str | tojson }};
+const baseUrl = {{ ("/week/" if kind == "weekly" else "/month/") | tojson }} + dateStr;
 let currentTemplateId = {{ active_template_id or 'null' }};
 function selectTemplate(id) {
   document.getElementById('tmpl-form-id').value = id;
