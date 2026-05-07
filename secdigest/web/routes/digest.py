@@ -67,6 +67,9 @@ async def _digest_view(request: Request, kind: str, date_str: str):
             raw = default_subject
         active_subject = raw.replace("{date}", period_start)
     active_toc = db.newsletter_get_toc(digest["id"])
+    active_voice = db.newsletter_get_voice_enabled(digest["id"])
+    voice_summary_enabled = db.cfg_get("voice_summary_enabled") == "1"
+    voice_status = db.voice_audio_get(digest["id"])
 
     return templates.TemplateResponse("digest.html", {
         "request": request,
@@ -82,6 +85,9 @@ async def _digest_view(request: Request, kind: str, date_str: str):
         "active_template_id": active_template_id,
         "active_subject": active_subject,
         "active_toc": active_toc,
+        "active_voice": active_voice,
+        "voice_summary_enabled": voice_summary_enabled,
+        "voice_status": voice_status,
     })
 
 

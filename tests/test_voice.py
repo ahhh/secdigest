@@ -1,0 +1,403 @@
+"""Tests for the voice-summary feature.
+
+Covers:
+  • Schema migration (voice_audio table exists)
+  • Text composition keeps the cap, includes title list
+  • _redact() scrubs anything credential-shaped from error strings
+  • Settings save round-trips encrypted secrets (api_key, aws_secret)
+  • Voice routes: generate kicks off a build, status returns row, toggle persists
+  • Master toggle is honoured on the generate path (kill switch works)
+  • render_email_html positions the voice block above the TOC
+  • Mailer's _voice_block_for returns empty string in every disabled branch
+  • boto3 import is lazy — code paths that don't need S3 don't choke
+
+The ElevenLabs HTTP call is intercepted by the existing stub_httpx fixture.
+boto3 has no equivalent stub yet; we monkeypatch a tiny fake S3 client into
+voice._s3_client so tests don't need AWS credentials or network."""
+import io
+from typing import Any
+
+import pytest
+
+from secdigest import config, crypto, db, mailer, voice
+from tests.conftest import get_csrf
+
+
+# ── Fakes ──────────────────────────────────────────────────────────────────
+
+class _FakeS3Client:
+    """Just enough of the boto3 S3 client surface for voice.py to feel at home.
+
+    Records every put_object so tests can assert on bucket/key/body, and
+    returns a stable fake presigned URL so tests can match it exactly."""
+    def __init__(self):
+        self.puts: list[dict] = []
+        self.deletes: list[dict] = []
+        self.urls: list[dict] = []
+
+    def put_object(self, **kwargs):
+        self.puts.append(kwargs)
+        return {}
+
+    def delete_object(self, **kwargs):
+        self.deletes.append(kwargs)
+        return {}
+
+    def generate_presigned_url(self, op, Params, ExpiresIn):
+        self.urls.append({"op": op, "params": Params, "expires_in": ExpiresIn})
+        return f"https://fake-s3.example/{Params['Bucket']}/{Params['Key']}?expiry={ExpiresIn}"
+
+
+@pytest.fixture
+def fake_s3(monkeypatch):
+    """Replace voice._s3_client so we never reach for boto3/AWS during tests."""
+    fake = _FakeS3Client()
+    monkeypatch.setattr(voice, "_s3_client", lambda cfg: fake)
+    return fake
+
+
+@pytest.fixture
+def voice_creds(tmp_db):
+    """Seed the DB with valid-looking voice + S3 credentials so the resolve
+    helpers don't raise VoiceConfigError. Secrets go through crypto.encrypt
+    matching the production save path."""
+    db.cfg_set("voice_summary_enabled", "1")
+    db.cfg_set("elevenlabs_api_key", crypto.encrypt("xi-testkey-123"))
+    db.cfg_set("elevenlabs_voice_id", "test-voice")
+    db.cfg_set("elevenlabs_model", "eleven_turbo_v2_5")
+    db.cfg_set("aws_access_key_id", "AKIATEST")
+    db.cfg_set("aws_secret_access_key", crypto.encrypt("aws-secret-456"))
+    db.cfg_set("aws_s3_bucket", "secdigest-test")
+    db.cfg_set("aws_s3_region", "us-east-1")
+    db.cfg_set("aws_s3_prefix", "secdigest/audio/")
+
+
+def _seed_daily():
+    """Build a daily newsletter with two included articles — the minimum
+    needed for compose_voice_text to produce a non-empty script."""
+    n = db.newsletter_get_or_create("2026-05-04")
+    db.article_insert(
+        newsletter_id=n["id"], hn_id=None, title="CVE in libfoo",
+        url="https://x/a", hn_score=0, hn_comments=0,
+        relevance_score=9.0, relevance_reason="r", position=0, included=1,
+    )
+    db.article_insert(
+        newsletter_id=n["id"], hn_id=None, title="New malware family discovered",
+        url="https://x/b", hn_score=0, hn_comments=0,
+        relevance_score=8.0, relevance_reason="r", position=1, included=1,
+    )
+    return n
+
+
+# ── Schema ─────────────────────────────────────────────────────────────────
+
+def test_voice_audio_table_exists(tmp_db):
+    cols = {r[1] for r in db._get_conn()
+            .execute("PRAGMA table_info(voice_audio)").fetchall()}
+    assert {"newsletter_id", "status", "s3_key", "duration_sec",
+            "voice_text", "error"}.issubset(cols)
+
+
+def test_voice_audio_upsert_round_trips(tmp_db):
+    n = _seed_daily()
+    db.voice_audio_upsert(n["id"], status="generating")
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k/1.mp3", duration_sec=42)
+    row = db.voice_audio_get(n["id"])
+    assert row["status"] == "ready"
+    assert row["s3_key"] == "k/1.mp3"
+    assert row["duration_sec"] == 42
+
+
+def test_voice_audio_upsert_rejects_unknown_column(tmp_db):
+    n = _seed_daily()
+    with pytest.raises(ValueError):
+        db.voice_audio_upsert(n["id"], status="ready", evil="DROP TABLE")
+
+
+# ── Text composition ───────────────────────────────────────────────────────
+
+def test_compose_voice_text_uses_titles_and_caps_to_eight(tmp_db):
+    n = db.newsletter_get_or_create("2026-05-04")
+    for i in range(12):
+        db.article_insert(
+            newsletter_id=n["id"], hn_id=None, title=f"Story {i}",
+            url=f"https://x/{i}", hn_score=0, hn_comments=0,
+            relevance_score=9 - i * 0.1, relevance_reason="r", position=i, included=1,
+        )
+    text = voice.compose_voice_text(n, db.article_list(n["id"]))
+    assert "12 stories" in text
+    assert "Story 0" in text and "Story 7" in text
+    assert "Story 8" not in text  # capped at 8 in the spoken list
+    assert "And 4 more" in text
+
+
+def test_compose_voice_text_empty_when_no_included(tmp_db):
+    n = db.newsletter_get_or_create("2026-05-04")
+    db.article_insert(
+        newsletter_id=n["id"], hn_id=None, title="excluded",
+        url="https://x", hn_score=0, hn_comments=0,
+        relevance_score=1.0, relevance_reason="r", position=0, included=0,
+    )
+    assert voice.compose_voice_text(n, db.article_list(n["id"])) == ""
+
+
+def test_compose_voice_text_respects_max_chars(tmp_db):
+    """Hard cap matters because ElevenLabs charges per character. A pathological
+    feed item with a 10kB title shouldn't be able to drain the budget."""
+    n = db.newsletter_get_or_create("2026-05-04")
+    db.article_insert(
+        newsletter_id=n["id"], hn_id=None, title="a" * 50_000,
+        url="https://x", hn_score=0, hn_comments=0,
+        relevance_score=9.0, relevance_reason="r", position=0, included=1,
+    )
+    text = voice.compose_voice_text(n, db.article_list(n["id"]))
+    assert len(text) <= voice._MAX_TEXT_CHARS
+
+
+# ── Redaction ──────────────────────────────────────────────────────────────
+
+def test_redact_strips_credential_shaped_substrings():
+    sample = "ElevenLabs 401: api_key=sk_live_abc123 invalid"
+    out = voice._redact(sample)
+    assert "sk_live_abc123" not in out
+    assert "<redacted>" in out
+
+
+def test_redact_handles_secret_and_token_keywords():
+    sample = "boto3 error: secret=AKIASUPERSECRET access_key=AKIA1234 token=eyJ.foo"
+    out = voice._redact(sample)
+    for leak in ("AKIASUPERSECRET", "AKIA1234", "eyJ.foo"):
+        assert leak not in out
+
+
+# ── Settings persistence ──────────────────────────────────────────────────
+
+async def test_settings_save_encrypts_voice_and_aws_secrets(admin_client):
+    tok = await get_csrf(admin_client, "/settings")
+    form = {
+        "csrf_token": tok,
+        "smtp_host": "smtp.test.invalid", "smtp_port": "587",
+        "smtp_user": "", "smtp_from": "SecDigest <test@test.invalid>",
+        "fetch_time": "00:00", "hn_min_score": "50",
+        "max_articles": "15", "max_curator_articles": "10",
+        "base_url": "http://localhost:8000",
+        "voice_summary_enabled": "on",
+        "elevenlabs_api_key": "xi-secret-from-form",
+        "elevenlabs_voice_id": "rachel",
+        "elevenlabs_model": "eleven_turbo_v2_5",
+        "aws_access_key_id": "AKIANEW",
+        "aws_secret_access_key": "aws-secret-from-form",
+        "aws_s3_bucket": "my-bucket", "aws_s3_region": "us-east-1",
+        "aws_s3_prefix": "secdigest/audio/",
+    }
+    r = await admin_client.post("/settings", data=form)
+    assert r.status_code == 302
+
+    # Round-trip the encryption: stored value must decrypt back to the input.
+    stored_xi = db.cfg_get("elevenlabs_api_key")
+    assert stored_xi != "xi-secret-from-form", "must be encrypted at rest"
+    assert crypto.decrypt(stored_xi) == "xi-secret-from-form"
+
+    stored_aws = db.cfg_get("aws_secret_access_key")
+    assert stored_aws != "aws-secret-from-form"
+    assert crypto.decrypt(stored_aws) == "aws-secret-from-form"
+
+
+async def test_settings_save_keeps_secret_when_form_blank(admin_client):
+    """The 'leave blank to keep current' UX must not zero out a previously
+    saved API key when an admin tweaks an unrelated field."""
+    db.cfg_set("elevenlabs_api_key", crypto.encrypt("original-key"))
+    tok = await get_csrf(admin_client, "/settings")
+    form = {
+        "csrf_token": tok,
+        "smtp_host": "smtp.test.invalid", "smtp_port": "587",
+        "smtp_user": "", "smtp_from": "SecDigest <test@test.invalid>",
+        "fetch_time": "00:00", "hn_min_score": "50",
+        "max_articles": "15", "max_curator_articles": "10",
+        "base_url": "http://localhost:8000",
+        "elevenlabs_api_key": "",  # blank — should keep current
+        "elevenlabs_voice_id": "rachel",
+        "elevenlabs_model": "eleven_turbo_v2_5",
+        "aws_access_key_id": "AKIANEW",
+        "aws_secret_access_key": "",  # blank — should keep current
+        "aws_s3_bucket": "my-bucket", "aws_s3_region": "us-east-1",
+        "aws_s3_prefix": "secdigest/audio/",
+    }
+    await admin_client.post("/settings", data=form)
+    assert crypto.decrypt(db.cfg_get("elevenlabs_api_key")) == "original-key"
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────
+
+async def test_voice_generate_kicks_off_when_master_enabled(
+        admin_client, voice_creds, fake_s3, monkeypatch):
+    """The generate endpoint should return 202 and immediately mark the row
+    queued. Stub _generate_pipeline to no-op so the test doesn't depend on
+    threading scheduling."""
+    n = _seed_daily()
+    monkeypatch.setattr(voice, "_generate_pipeline", lambda *a, **kw: None)
+
+    tok = await get_csrf(admin_client, "/day/2026-05-04")
+    r = await admin_client.post(
+        f"/day/2026-05-04/voice/generate",
+        headers={"X-CSRF-Token": tok},
+    )
+    assert r.status_code == 202
+    row = db.voice_audio_get(n["id"])
+    assert row["status"] == "queued"
+
+
+async def test_voice_generate_blocked_when_master_disabled(
+        admin_client, voice_creds):
+    """Stale curator tab can't sneak past the kill switch."""
+    _seed_daily()
+    db.cfg_set("voice_summary_enabled", "0")
+    tok = await get_csrf(admin_client, "/day/2026-05-04")
+    r = await admin_client.post(
+        "/day/2026-05-04/voice/generate",
+        headers={"X-CSRF-Token": tok},
+    )
+    assert r.status_code == 403
+
+
+async def test_voice_status_reflects_db_state(admin_client, voice_creds):
+    n = _seed_daily()
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k/1.mp3",
+                          duration_sec=42)
+    r = await admin_client.get("/day/2026-05-04/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ready"
+    assert body["duration"] == 42
+    # Critically: status must NOT include the s3_key. Leaking it would
+    # let an authed admin precompute presigned URLs out of band, which
+    # defeats the 'mint at send time' design.
+    assert "s3_key" not in body
+
+
+async def test_voice_toggle_persists_per_newsletter(admin_client, voice_creds):
+    n = _seed_daily()
+    tok = await get_csrf(admin_client, "/day/2026-05-04")
+    r = await admin_client.post(
+        "/day/2026-05-04/voice/toggle",
+        data={"enabled": "1"},
+        headers={"X-CSRF-Token": tok},
+    )
+    assert r.status_code == 200
+    assert db.newsletter_get_voice_enabled(n["id"]) is True
+    await admin_client.post(
+        "/day/2026-05-04/voice/toggle",
+        data={"enabled": "0"},
+        headers={"X-CSRF-Token": tok},
+    )
+    assert db.newsletter_get_voice_enabled(n["id"]) is False
+
+
+# ── Email rendering ────────────────────────────────────────────────────────
+
+def test_render_places_voice_block_above_toc(tmp_db):
+    n = _seed_daily()
+    arts = db.article_list(n["id"])
+    voice_block = mailer._render_voice_block("https://fake/audio.mp3", duration_sec=42)
+    body = mailer.render_email_html(
+        n, arts, unsubscribe_url="http://x/u",
+        include_toc=True, voice_block=voice_block,
+    )
+    voice_idx = body.find("Listen to this issue")
+    toc_idx = body.find("Contents")
+    art_idx = body.find("CVE in libfoo")
+    assert voice_idx >= 0 and toc_idx >= 0 and art_idx >= 0
+    assert voice_idx < toc_idx < art_idx, \
+        f"order broken: voice={voice_idx} toc={toc_idx} art={art_idx}"
+
+
+def test_render_omits_voice_when_block_empty(tmp_db):
+    n = _seed_daily()
+    body = mailer.render_email_html(n, db.article_list(n["id"]),
+                                    unsubscribe_url="http://x/u")
+    assert "Listen to this issue" not in body
+    assert "{voice_block}" not in body
+
+
+# ── _voice_block_for guards ────────────────────────────────────────────────
+
+def test_voice_block_for_empty_when_master_off(tmp_db):
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "0")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k.mp3")
+    assert mailer._voice_block_for(n["id"]) == ""
+
+
+def test_voice_block_for_empty_when_per_newsletter_off(tmp_db):
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], False)
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k.mp3")
+    assert mailer._voice_block_for(n["id"]) == ""
+
+
+def test_voice_block_for_empty_when_status_not_ready(tmp_db):
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.voice_audio_upsert(n["id"], status="generating")
+    assert mailer._voice_block_for(n["id"]) == ""
+
+
+def test_voice_block_for_empty_when_presign_fails(tmp_db, monkeypatch):
+    """A broken S3 config must NOT block the email. Silent fallback to no
+    voice block is the right behaviour; failing the whole send because the
+    audio link can't be minted would be worse than just dropping the audio."""
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k.mp3")
+
+    def boom(*a, **kw):
+        raise RuntimeError("S3 unreachable")
+    monkeypatch.setattr(voice, "presigned_url", boom)
+    assert mailer._voice_block_for(n["id"]) == ""
+
+
+def test_voice_block_for_renders_when_all_aligned(tmp_db, monkeypatch):
+    n = _seed_daily()
+    db.cfg_set("voice_summary_enabled", "1")
+    db.newsletter_set_voice_enabled(n["id"], True)
+    db.voice_audio_upsert(n["id"], status="ready", s3_key="k.mp3", duration_sec=33)
+    monkeypatch.setattr(voice, "presigned_url", lambda key, **kw: f"https://fake/{key}")
+    block = mailer._voice_block_for(n["id"])
+    assert "Listen to this issue" in block
+    assert "https://fake/k.mp3" in block
+    assert "0:33" in block
+
+
+# ── Pipeline integration ───────────────────────────────────────────────────
+
+def test_generate_pipeline_writes_ready_row(tmp_db, voice_creds, fake_s3, monkeypatch):
+    """Drive the whole synchronous body of _generate_pipeline (skipping the
+    thread launch) with a fake ElevenLabs and a fake S3 client. The row
+    should land in status='ready' with a duration estimate."""
+    n = _seed_daily()
+    monkeypatch.setattr(voice, "_generate_audio_bytes",
+                        lambda text: b"\xff\xfb" + b"\x00" * 32_000)  # ~2s of audio
+    voice._generate_pipeline(n["id"], "daily")
+    row = db.voice_audio_get(n["id"])
+    assert row["status"] == "ready"
+    assert row["s3_key"] and row["s3_key"].endswith(".mp3")
+    assert row["duration_sec"] >= 1
+    # Confirm the audio was actually uploaded with the right content type
+    assert fake_s3.puts and fake_s3.puts[0]["ContentType"] == "audio/mpeg"
+
+
+def test_generate_pipeline_writes_failed_row_on_api_error(
+        tmp_db, voice_creds, fake_s3, monkeypatch):
+    n = _seed_daily()
+    def boom(text):
+        raise RuntimeError("ElevenLabs 401: api_key=sk_live_xyz invalid")
+    monkeypatch.setattr(voice, "_generate_audio_bytes", boom)
+    voice._generate_pipeline(n["id"], "daily")
+    row = db.voice_audio_get(n["id"])
+    assert row["status"] == "failed"
+    assert "sk_live_xyz" not in (row["error"] or ""), \
+        "credential leaked into error column"

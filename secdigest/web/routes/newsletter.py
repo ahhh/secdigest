@@ -128,6 +128,9 @@ async def day_view(request: Request, date_str: str):
         tmpl = next((t for t in email_templates if t["id"] == active_template_id), email_templates[0] if email_templates else None)
         active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"SecDigest — {date_str}"
     active_toc = db.newsletter_get_toc(newsletter["id"]) if newsletter else False
+    active_voice = db.newsletter_get_voice_enabled(newsletter["id"]) if newsletter else False
+    voice_summary_enabled = db.cfg_get("voice_summary_enabled") == "1"
+    voice_status = db.voice_audio_get(newsletter["id"]) if newsletter else None
     return templates.TemplateResponse("day.html", {
         "request": request,
         "date_str": date_str,
@@ -140,6 +143,9 @@ async def day_view(request: Request, date_str: str):
         "active_template_id": active_template_id,
         "active_subject": active_subject,
         "active_toc": active_toc,
+        "active_voice": active_voice,
+        "voice_summary_enabled": voice_summary_enabled,
+        "voice_status": voice_status,
     })
 
 

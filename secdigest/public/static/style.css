@@ -116,6 +116,19 @@ body {
   font-size: 12px;
   letter-spacing: 0.06em;
 }
+.topbar-link {
+  color: var(--cyan);
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(0, 229, 255, 0.4);
+  transition: color 0.15s, border-color 0.15s, text-shadow 0.15s;
+}
+.topbar-link:hover,
+.topbar-link:focus {
+  color: var(--magenta);
+  border-bottom-color: var(--magenta);
+  text-shadow: 0 0 6px rgba(255, 46, 122, 0.55);
+  outline: none;
+}
 
 /* ── Hero ──────────────────────────────────────────────────────────── */
 main.hero {

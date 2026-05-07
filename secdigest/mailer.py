@@ -22,6 +22,31 @@ def _sanitize_header(value: str) -> str:
     return str(value).replace("\r", "").replace("\n", "")
 
 
+def _voice_block_for(newsletter_id: int) -> str:
+    """Resolve the voice block for a newsletter. Returns empty string when:
+      • the per-newsletter toggle is off
+      • the master setting is off
+      • there's no audio yet, or it's still building, or it failed
+      • presigned URL minting raises (S3 creds rotated, bucket gone, etc.)
+
+    All of those are silent fallbacks so a misconfigured voice setup never
+    blocks the email from going out — at worst, subscribers just miss the
+    audio link for that issue."""
+    if db.cfg_get("voice_summary_enabled") != "1":
+        return ""
+    if not db.newsletter_get_voice_enabled(newsletter_id):
+        return ""
+    row = db.voice_audio_get(newsletter_id)
+    if not row or row.get("status") != "ready" or not row.get("s3_key"):
+        return ""
+    try:
+        from secdigest import voice
+        url = voice.presigned_url(row["s3_key"])
+    except Exception:
+        return ""
+    return _render_voice_block(url, row.get("duration_sec") or 0)
+
+
 def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str]:
     """Internal: open a single SMTP connection and send one message. Used by all the
     higher-level send_* helpers below for one-off transactional mail."""
@@ -139,6 +164,37 @@ def _render_article(article_html: str, a: dict, n: int) -> str:
     return s
 
 
+def _render_voice_block(audio_url: str, duration_sec: int = 0) -> str:
+    """A single ▶ Listen card that links to a presigned S3 URL. Designed to
+    survive aggressive HTML mail clients: pure inline styles, no <audio> tag
+    (Gmail strips them), reasonable contrast on both dark and light footers,
+    and a single anchor as the click target so screen readers narrate it
+    sensibly. The duration label is informational; an empty/zero duration
+    falls back to a generic "audio" label."""
+    safe_url = html.escape(audio_url, quote=True)
+    duration_label = ""
+    if duration_sec:
+        m, s = divmod(int(duration_sec), 60)
+        duration_label = f" &middot; {m}:{s:02d}"
+    return (
+        '<tr><td style="padding:18px 4px 6px;">'
+        f'<a href="{safe_url}" '
+        'style="display:block;background:#1f6feb;color:#ffffff;text-decoration:none;'
+        'border-radius:8px;padding:14px 18px;font-family:-apple-system,BlinkMacSystemFont,'
+        '\'Segoe UI\',Helvetica,Arial,sans-serif;">'
+        '<span style="display:inline-block;font-size:1.1em;font-weight:600;">'
+        '&#x25B6; Listen to this issue</span>'
+        f'<span style="display:inline-block;margin-left:8px;font-size:.85em;opacity:.85;">'
+        f'voice summary{duration_label}</span>'
+        '</a>'
+        '<div style="font-size:.7em;color:#8b949e;margin-top:6px;text-align:right;">'
+        'Voice by '
+        '<a href="https://elevenlabs.io" style="color:#8b949e;" target="_blank" rel="noopener">ElevenLabs</a>'
+        '</div>'
+        '</td></tr>'
+    )
+
+
 def _render_feedback_block(signal_url: str, noise_url: str) -> str:
     """Two inline-styled buttons that render in HTML mail clients without external
     CSS. The link targets are GET endpoints — clients like Gmail won't honour
@@ -169,7 +225,8 @@ def render_email_html(newsletter: dict, articles: list[dict],
                       template_id: int | None = None,
                       unsubscribe_url: str = "",
                       include_toc: bool = False,
-                      feedback_block: str = "") -> str:
+                      feedback_block: str = "",
+                      voice_block: str = "") -> str:
     """Render the newsletter as HTML using the specified or configured template."""
     template = db.email_template_get(template_id) if template_id else None
     if not template:
@@ -214,6 +271,20 @@ def render_email_html(newsletter: dict, articles: list[dict],
         toc = _render_toc(included, is_2col=is_2col)
         rows_1col = toc + rows_1col
         rows_2col = toc + rows_2col
+
+    # Voice block sits ABOVE the TOC. Apply it last so it ends up first in the
+    # rendered output (voice → toc → articles). 2-column templates need the
+    # block wrapped in a colspan so the layout doesn't break when it lands
+    # inside the grid table.
+    if voice_block:
+        rows_1col = voice_block + rows_1col
+        if is_2col:
+            wrapped = voice_block.replace(
+                '<tr><td style="padding:',
+                '<tr><td colspan="2" style="padding:',
+                1,
+            )
+            rows_2col = wrapped + rows_2col
 
     body = template["html"]
     body = body.replace("{articles}", rows_1col)
@@ -311,8 +382,11 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
             f"{base_url}/feedback/test-preview/{newsletter['id']}/noise",
         )
 
+    voice_block = _voice_block_for(newsletter["id"])
+
     html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url,
-                                  include_toc=include_toc, feedback_block=fb_block)
+                                  include_toc=include_toc, feedback_block=fb_block,
+                                  voice_block=voice_block)
     text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
 
     port = int(cfg.get("smtp_port", 587))
@@ -380,6 +454,10 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
     include_toc = db.newsletter_get_toc(newsletter["id"])
     feedback_on = cfg.get("feedback_enabled", "1") == "1"
+    # Voice block is identical for every recipient (presigned URL is the same;
+    # it isn't keyed by subscriber). Resolve once outside the loop to avoid N
+    # round-trips to S3 sigv4 for a 1000-subscriber blast.
+    voice_block = _voice_block_for(newsletter["id"])
 
     port = int(cfg.get("smtp_port", 587))
     smtp_user = cfg.get("smtp_user", "")
@@ -414,7 +492,8 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
                         f"{base_url}/feedback/{token}/{newsletter['id']}/noise",
                     )
                 html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url,
-                                              include_toc=include_toc, feedback_block=fb_block)
+                                              include_toc=include_toc, feedback_block=fb_block,
+                                              voice_block=voice_block)
                 text_body = _render_text(newsletter, articles, unsubscribe_url=unsub_url)
                 to_email = _sanitize_header(sub["email"]).strip()
                 if not to_email or "@" not in to_email:

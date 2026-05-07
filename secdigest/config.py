@@ -114,5 +114,17 @@ DB_CONFIG_DEFAULTS = {
     "base_url":      os.environ.get("BASE_URL", "http://localhost:8000"),
     "auto_send":     "0",
     "feedback_enabled": "1",
+    # Voice summaries (ElevenLabs TTS → S3). Disabled by default; the Settings
+    # page is the source of truth. The keys are seeded as empty strings so that
+    # cfg_get returns "" rather than None when no value is set.
+    "voice_summary_enabled": "0",
+    "elevenlabs_api_key":    "",
+    "elevenlabs_voice_id":   "21m00Tcm4TlvDq8ikWAM",  # 'Rachel' — free-tier default
+    "elevenlabs_model":      "eleven_turbo_v2_5",
+    "aws_access_key_id":     "",
+    "aws_secret_access_key": "",
+    "aws_s3_bucket":         "",
+    "aws_s3_region":         "us-east-1",
+    "aws_s3_prefix":         "secdigest/audio/",
     "password_hash": DEFAULT_PASSWORD_HASH,
 }

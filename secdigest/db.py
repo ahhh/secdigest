@@ -118,6 +118,18 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(subscriber_id, newsletter_id)
 );
+
+CREATE TABLE IF NOT EXISTS voice_audio (
+    newsletter_id INTEGER PRIMARY KEY REFERENCES newsletters(id) ON DELETE CASCADE,
+    status        TEXT    NOT NULL DEFAULT 'idle'
+                          CHECK (status IN ('idle','queued','generating','ready','failed')),
+    s3_key        TEXT,
+    duration_sec  INTEGER,
+    voice_text    TEXT,
+    error         TEXT,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 DEFAULT_PROMPTS = [
@@ -1225,6 +1237,62 @@ def feedback_for_newsletter(newsletter_id: int) -> dict[str, int]:
     for r in rows:
         out[r["vote"]] = r["n"]
     return out
+
+
+# ── Voice audio (ElevenLabs TTS → S3) ────────────────────────────────────────
+
+def voice_audio_get(newsletter_id: int) -> dict | None:
+    row = _get_conn().execute(
+        "SELECT * FROM voice_audio WHERE newsletter_id=?", (newsletter_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def voice_audio_upsert(newsletter_id: int, **fields):
+    """Insert or update the row. The status column has a CHECK constraint, so
+    callers passing a bogus status will trip a clean SQLite error instead of
+    silently corrupting state."""
+    allowed = {"status", "s3_key", "duration_sec", "voice_text", "error"}
+    bad = set(fields) - allowed
+    if bad:
+        raise ValueError(f"voice_audio_upsert: disallowed columns {bad}")
+    if not fields:
+        return
+    cols = ", ".join(fields)
+    placeholders = ", ".join("?" * len(fields))
+    sets = ", ".join(f"{k}=excluded.{k}" for k in fields)
+    with _lock:
+        _get_conn().execute(
+            f"INSERT INTO voice_audio(newsletter_id, {cols}) "
+            f"VALUES (?, {placeholders}) "
+            f"ON CONFLICT(newsletter_id) DO UPDATE SET {sets}, "
+            f"updated_at=CURRENT_TIMESTAMP",
+            (newsletter_id, *fields.values()),
+        )
+        _get_conn().commit()
+
+
+def voice_audio_clear(newsletter_id: int):
+    """Drop the row so a fresh generation starts from a clean slate."""
+    with _lock:
+        _get_conn().execute(
+            "DELETE FROM voice_audio WHERE newsletter_id=?", (newsletter_id,)
+        )
+        _get_conn().commit()
+
+
+def newsletter_get_voice_enabled(newsletter_id: int) -> bool:
+    """Per-newsletter render flag. Mirrors the TOC pattern: a config_kv row
+    keyed by 'voice_<id>' lets us reuse the existing settings plumbing without
+    bloating the newsletters table."""
+    row = _get_conn().execute(
+        "SELECT value FROM config_kv WHERE key=?", (f"voice_{newsletter_id}",)
+    ).fetchone()
+    return row[0] == "1" if row else False
+
+
+def newsletter_set_voice_enabled(newsletter_id: int, enabled: bool):
+    cfg_set(f"voice_{newsletter_id}", "1" if enabled else "0")
 
 
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────

@@ -98,6 +98,9 @@
       </form>
     </div>
 
+    {% set path_prefix = 'week' if kind == 'weekly' else 'month' %}
+    {% include "_voice_panel.html" with context %}
+
     <div class="builder-section">
       <div class="section-label" style="margin-bottom:8px;">Send Test</div>
       <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/send-test" method="post">
