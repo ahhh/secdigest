@@ -31,6 +31,7 @@ DB_CONFIG_DEFAULTS = {
     "smtp_from":     os.environ.get("SMTP_FROM", "SecDigest <noreply@example.com>"),
     "fetch_time":    os.environ.get("FETCH_TIME", "00:00"),
     "hn_min_score":  os.environ.get("HN_MIN_SCORE", "50"),
+    "hn_pool_min":   os.environ.get("HN_POOL_MIN", "10"),
     "max_articles":  os.environ.get("MAX_ARTICLES", "15"),
     "max_curator_articles": os.environ.get("MAX_CURATOR_ARTICLES", "10"),
     "base_url":      os.environ.get("BASE_URL", "http://localhost:8000"),

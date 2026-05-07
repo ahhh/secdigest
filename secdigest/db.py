@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS articles (
     position        INTEGER DEFAULT 0,
     included        INTEGER DEFAULT 1,
     source          TEXT    DEFAULT 'hn',
+    source_name     TEXT,
     pin_weekly      INTEGER DEFAULT 0,
     pin_monthly     INTEGER DEFAULT 0,
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -407,6 +408,7 @@ def init_db():
         _migrate_builtin_remove_hn_points(conn)
         _migrate_newsletters_kind(conn)
         _migrate_article_pins(conn)
+        _migrate_article_source_name(conn)
         _migrate_subscriber_cadence(conn)
 
 
@@ -523,6 +525,15 @@ def _migrate_article_pins(conn):
         except sqlite3.OperationalError:
             pass
     conn.commit()
+
+
+def _migrate_article_source_name(conn):
+    """Add source_name column to articles for older DBs."""
+    try:
+        conn.execute("ALTER TABLE articles ADD COLUMN source_name TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
 
 def _migrate_subscriber_cadence(conn):
@@ -720,18 +731,19 @@ def article_get(id: int) -> dict | None:
 def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
                    hn_score: int, hn_comments: int, relevance_score: float,
                    relevance_reason: str, position: int,
-                   included: int = 1, source: str = 'hn') -> int:
+                   included: int = 1, source: str = 'hn',
+                   source_name: str | None = None) -> int:
     hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else None
     with _lock:
         cur = _get_conn().execute(
             """INSERT OR IGNORE INTO articles
                (newsletter_id, hn_id, title, url, hn_url, hn_score, hn_comments,
-                relevance_score, relevance_reason, position, included, source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                relevance_score, relevance_reason, position, included, source, source_name)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (newsletter_id, hn_id, title, url,
              hn_url,
              hn_score, hn_comments, relevance_score, relevance_reason, position,
-             included, source),
+             included, source, source_name),
         )
         _get_conn().commit()
         return cur.lastrowid

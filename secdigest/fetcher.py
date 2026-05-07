@@ -220,6 +220,7 @@ async def run_fetch(date_str: str | None = None) -> dict:
 
     max_articles = int(db.cfg_get("max_articles") or 15)
     max_curator = int(db.cfg_get("max_curator_articles") or 10)
+    hn_pool_min = int(db.cfg_get("hn_pool_min") or 10)
 
     relevant = sorted(
         [s for s in scored if s["relevance_score"] >= 5.0],
@@ -227,7 +228,22 @@ async def run_fetch(date_str: str | None = None) -> dict:
         reverse=True,
     )
 
-    for pos, story in enumerate(relevant[:max_articles]):
+    # Reserve HN slots so RSS-heavy days don't crowd HN out of the pool. Walk `relevant`
+    # in current rank order and skim the top HN until the reservation is met; everything
+    # else competes for the remaining slots by pure relevance.
+    hn_count = sum(1 for s in relevant if s.get("source", "hn") == "hn")
+    hn_target = min(hn_pool_min, hn_count, max_articles)
+    reserved: list[dict] = []
+    remainder: list[dict] = []
+    for s in relevant:
+        if s.get("source", "hn") == "hn" and len(reserved) < hn_target:
+            reserved.append(s)
+        else:
+            remainder.append(s)
+    remainder.sort(key=lambda x: x["relevance_score"], reverse=True)
+    final = reserved + remainder[: max(0, max_articles - len(reserved))]
+
+    for pos, story in enumerate(final):
         included = 1 if pos < max_curator else 0
         db.article_insert(
             newsletter_id=newsletter["id"],
@@ -241,8 +257,10 @@ async def run_fetch(date_str: str | None = None) -> dict:
             position=pos,
             included=included,
             source=story.get("source", "hn"),
+            source_name=story.get("source_name"),
         )
 
-    print(f"[fetcher] stored {min(len(relevant), max_articles)} articles, "
-          f"{min(len(relevant), max_curator)} included")
+    print(f"[fetcher] stored {len(final)} articles "
+          f"({len(reserved)} HN reserved, {len(final) - len(reserved)} other), "
+          f"{min(len(final), max_curator)} included")
     return db.newsletter_get(date_str)

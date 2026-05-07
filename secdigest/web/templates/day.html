@@ -360,17 +360,21 @@ function appendFields(form, fields) {
          data-id="{{ a.id }}">
       <div class="article-drag-handle">&#x28BF;</div>
       <div class="article-body">
+        {% set src_label = ('Hacker News' if a.source == 'hn'
+                              else ('Manual' if a.source == 'manual'
+                                    else (a.source_name or 'RSS feed'))) %}
         <div class="article-meta">
           <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
-          {% if a.hn_id %}
+          {% if a.source == 'hn' and a.hn_id %}
           <span class="hn-score">HN {{ a.hn_score }}</span>
           <span class="hn-comments">{{ a.hn_comments }} comments</span>
+          {% elif a.source == 'rss' %}
+          <span class="text-muted" style="font-size:0.9em;">{{ a.source_name or 'RSS' }}</span>
           {% else %}
           <span class="text-muted" style="font-style:italic;font-size:0.95em;">editorial note</span>
           {% endif %}
-          {% if a.relevance_reason %}
-          <span class="relevance-reason" title="{{ a.relevance_reason }}">&#x24D8;</span>
-          {% endif %}
+          <span class="relevance-reason"
+                title="Source: {{ src_label }}{% if a.relevance_reason %} — {{ a.relevance_reason }}{% endif %}">&#x24D8;</span>
         </div>
 
         {% if a.url or a.hn_url %}

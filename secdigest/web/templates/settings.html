@@ -33,14 +33,20 @@
              class="input input-sm" min="1" max="1000">
     </div>
     <div class="form-group">
-      <label class="label">Max articles per newsletter</label>
+      <label class="label">Daily article pool size</label>
       <input type="number" name="max_articles" value="{{ cfg.max_articles }}"
              class="input input-sm" min="1" max="50">
+      <p class="text-muted" style="font-size:.8em;margin:4px 0 0;line-height:1.4;">
+        Total articles stored per day after scoring. The curator picks from this set; extras stay in the pool view for manual promotion.
+      </p>
     </div>
     <div class="form-group">
-      <label class="label">Max curator articles <span class="text-muted">(top N auto-included, rest in pool)</span></label>
+      <label class="label">Articles auto-included in the daily newsletter</label>
       <input type="number" name="max_curator_articles" value="{{ cfg.max_curator_articles }}"
              class="input input-sm" min="1" max="50">
+      <p class="text-muted" style="font-size:.8em;margin:4px 0 0;line-height:1.4;">
+        Top N from the daily pool that are pre-included in the newsletter. The remaining pool articles can still be promoted by hand.
+      </p>
     </div>
     <div class="form-group">
       <label class="checkbox-label">
