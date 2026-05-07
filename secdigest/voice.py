@@ -30,6 +30,13 @@ from secdigest import config, crypto, db
 
 _ELEVENLABS_API = "https://api.elevenlabs.io/v1"
 
+# Bounds ElevenLabs accepts on voice_settings.speed. We clamp here so an admin
+# typo doesn't return a 422 from the API mid-generation; the setting is
+# admin-only so this is convenience, not security.
+_SPEED_MIN = 0.7
+_SPEED_MAX = 1.2
+_SPEED_DEFAULT = 1.10
+
 # Bytes-per-second estimate at ElevenLabs' default 128 kbps MP3 encoding. Used
 # to derive a duration for the UI without pulling in a heavy MP3 parser.
 # Actual bitrate varies by voice/model but the estimate is within ~10% — fine
@@ -142,6 +149,17 @@ class VoiceConfigError(Exception):
     gap (no API key) from a transient generation failure (API down)."""
 
 
+def _clamp_speed(raw: str | float | None) -> float:
+    """Coerce the raw setting to a float and clamp into ElevenLabs' window.
+    A blank/garbage value falls back to the default rather than raising —
+    voice generation should never fail because of a settings typo."""
+    try:
+        speed = float(raw) if raw not in (None, "") else _SPEED_DEFAULT
+    except (TypeError, ValueError):
+        speed = _SPEED_DEFAULT
+    return max(_SPEED_MIN, min(_SPEED_MAX, speed))
+
+
 def _resolve_elevenlabs_config() -> dict:
     cfg = db.cfg_all()
     api_key_enc = cfg.get("elevenlabs_api_key", "")
@@ -152,7 +170,8 @@ def _resolve_elevenlabs_config() -> dict:
     if not voice_id:
         raise VoiceConfigError("ElevenLabs voice ID not set in Settings")
     model = cfg.get("elevenlabs_model", "eleven_turbo_v2_5").strip()
-    return {"api_key": api_key, "voice_id": voice_id, "model": model}
+    speed = _clamp_speed(cfg.get("elevenlabs_speed"))
+    return {"api_key": api_key, "voice_id": voice_id, "model": model, "speed": speed}
 
 
 def _generate_audio_bytes(text: str) -> bytes:
@@ -164,7 +183,10 @@ def _generate_audio_bytes(text: str) -> bytes:
     payload = {
         "text": text,
         "model_id": elc["model"],
-        # voice_settings are optional — defaults are reasonable for narration
+        # Only `speed` is overridden — leaving stability/similarity_boost/style
+        # unset means ElevenLabs uses each voice's saved defaults, which match
+        # what the admin previewed when picking the voice.
+        "voice_settings": {"speed": elc["speed"]},
     }
     headers = {
         "xi-api-key": elc["api_key"],

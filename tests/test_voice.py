@@ -238,6 +238,55 @@ def test_compose_voice_text_respects_max_chars(tmp_db):
 
 # ── Redaction ──────────────────────────────────────────────────────────────
 
+# ── Speed setting ──────────────────────────────────────────────────────────
+
+def test_clamp_speed_handles_blank_and_garbage():
+    """Settings typos shouldn't break voice generation. A blank or
+    unparseable value falls back to the default rather than raising."""
+    assert voice._clamp_speed(None) == voice._SPEED_DEFAULT
+    assert voice._clamp_speed("") == voice._SPEED_DEFAULT
+    assert voice._clamp_speed("not-a-number") == voice._SPEED_DEFAULT
+
+
+def test_clamp_speed_clips_to_elevenlabs_window():
+    """ElevenLabs returns 422 outside 0.7–1.2; we clamp at write time so a
+    bogus value doesn't fail mid-generation."""
+    assert voice._clamp_speed("0.1") == voice._SPEED_MIN
+    assert voice._clamp_speed("9.9") == voice._SPEED_MAX
+    assert voice._clamp_speed("1.05") == 1.05  # in-window passes through
+
+
+def test_generate_audio_bytes_passes_speed_in_voice_settings(
+        tmp_db, voice_creds, monkeypatch):
+    """Pin the wire-format contract: voice_settings.speed must arrive in
+    every TTS request, sourced from the configured value, so a regression
+    that drops it would surface as voice output reverting to default speed."""
+    db.cfg_set("elevenlabs_speed", "1.15")
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+        content = b"\xff\xfb" + b"\x00" * 100
+
+    class _FakeClient:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json=None, headers=None):
+            captured["json"] = json
+            captured["headers"] = headers
+            return _FakeResp()
+
+    monkeypatch.setattr(voice.httpx, "Client", _FakeClient)
+    voice._generate_audio_bytes("hello world")
+
+    vs = captured["json"]["voice_settings"]
+    assert vs["speed"] == 1.15
+    # API key never appears in body — header-only delivery
+    assert "api_key" not in str(captured["json"]).lower()
+    assert captured["headers"]["xi-api-key"] == "xi-testkey-123"
+
+
 def test_redact_strips_credential_shaped_substrings():
     sample = "ElevenLabs 401: api_key=sk_live_abc123 invalid"
     out = voice._redact(sample)

@@ -125,6 +125,11 @@ DB_CONFIG_DEFAULTS = {
     "elevenlabs_api_key":    "",
     "elevenlabs_voice_id":   "21m00Tcm4TlvDq8ikWAM",  # 'Rachel' — free-tier default
     "elevenlabs_model":      "eleven_turbo_v2_5",
+    # Narration speed multiplier passed to voice_settings.speed. 1.0 is the
+    # voice's natural cadence; 1.1 is ~10% faster and the sweet spot for
+    # newsletter narration (less filler, no chipmunk effect). ElevenLabs
+    # accepts 0.7–1.2; we clamp on save.
+    "elevenlabs_speed":      "1.10",
     "aws_access_key_id":     "",
     "aws_secret_access_key": "",
     "aws_s3_bucket":         "",
