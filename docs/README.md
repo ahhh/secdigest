@@ -35,6 +35,9 @@ to get the shape of the system, then dive into the part you're touching.
 11. **[debugging.md](debugging.md)** — "Emails aren't sending," "fetch
     returns nothing," "subscribers aren't getting the daily" — symptoms
     paired with sqlite-inspection commands.
+12. **[logging.md](logging.md)** — The three logging surfaces (stdout,
+    `llm_audit_log`, sticky last-error keys), where each module logs,
+    how to read in dev vs systemd, and how to hook in new traces.
 
 ## Conventions used in these docs
 
