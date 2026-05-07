@@ -116,11 +116,19 @@ def compose_voice_text(newsletter: dict, articles: list[dict],
         title = (a.get("title") or "").strip().rstrip(".")
         if not title:
             continue
+        # Insert a clear pause before every story announcement except the
+        # first, so the listener can register where the previous summary
+        # ended before "Story N" lands. ElevenLabs honours <break> SSML on
+        # all current models; 0.7s is longer than a sentence-end (~0.5s)
+        # but short enough that nothing sounds stalled.
+        if i > 1:
+            parts.append('<break time="0.7s" />')
         parts.append(f"Story {i}: {title}.")
         summary = _trim_summary_for_voice(a.get("summary") or "")
         if summary:
             parts.append(summary)
     if len(included) > 8:
+        parts.append('<break time="0.5s" />')
         parts.append(f"And {len(included) - 8} more.")
 
     text = " ".join(parts)

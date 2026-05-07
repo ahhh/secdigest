@@ -136,6 +136,31 @@ def test_compose_voice_text_uses_titles_and_caps_to_eight(tmp_db):
     assert "And 4 more" in text
 
 
+def test_compose_voice_text_inserts_pause_between_stories(tmp_db):
+    """A <break> SSML tag should sit before every story announcement except
+    the first — so the listener gets a clear beat between one story's
+    summary and the next 'Story N:' intro. ElevenLabs treats unknown SSML
+    as text, so silently dropping support for break tags would surface as
+    the narrator literally reading 'break time zero point seven seconds' —
+    which is exactly the kind of regression this test catches."""
+    n = db.newsletter_get_or_create("2026-05-04")
+    nato = ["alpha", "bravo", "charlie", "delta"]
+    for i, name in enumerate(nato):
+        db.article_insert(
+            newsletter_id=n["id"], hn_id=None, title=name,
+            url=f"https://x/{i}", hn_score=0, hn_comments=0,
+            relevance_score=9 - i * 0.1, relevance_reason="r", position=i, included=1,
+        )
+    text = voice.compose_voice_text(n, db.article_list(n["id"]))
+    # 4 stories → 3 inter-story pauses (none before Story 1)
+    assert text.count('<break time="0.7s" />') == 3
+    # Each break should sit immediately before a "Story N:" label
+    for i in (2, 3, 4):
+        assert f'<break time="0.7s" /> Story {i}:' in text
+    # No leading break — Story 1 follows directly from the issue intro
+    assert text.split("Story 1:")[0].count("<break") == 0
+
+
 def test_compose_voice_text_includes_article_summaries(tmp_db):
     """The narrator should read each article's short summary alongside its
     title — voice subscribers shouldn't have to click through just to know
