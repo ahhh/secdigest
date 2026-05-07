@@ -46,24 +46,22 @@ def _wrap_header_html(header_html: str) -> str:
 
 
 def _header_block_for(newsletter_id: int) -> str:
-    """Resolve the header block for a real send. Empty string when the toggle
-    is off, the active template has no header_html, or the field is blank.
-    {date} interpolation runs at the body level (after this block is spliced
-    in), so admins can drop {date} into their header markup naturally."""
+    """Resolve the header block for a real send. Empty string when the
+    per-newsletter toggle is off OR the global header is blank.
+
+    The header is a single global value stored in config_kv (not on the
+    template), so flipping templates doesn't fork the header content. Admins
+    edit it once on the Email Templates page and it applies to every issue
+    whose toggle is on. {date} interpolation runs at the body level after
+    splicing, so {date} in the header markup is honoured naturally."""
     if not db.newsletter_get_header(newsletter_id):
         return ""
-    tid = db.newsletter_get_template_id(newsletter_id)
-    template = db.email_template_get(tid) if tid else db.email_template_default()
-    if not template:
-        return ""
-    return _wrap_header_html(template.get("header_html") or "")
+    return _wrap_header_html(db.cfg_get("header_html") or "")
 
 
 def _header_block_for_preview(newsletter_id: int) -> str:
-    """Identical to `_header_block_for` for now — the header content is
-    static markup, no presigned URLs to mint, so there's no preview/send
-    divergence to manage. Kept as its own function for symmetry with the
-    voice helpers and so future preview-only behaviour has a hook to land in."""
+    """Same as `_header_block_for` — the header is static markup with at
+    most a {date} substitution, so the preview and send paths converge."""
     return _header_block_for(newsletter_id)
 
 

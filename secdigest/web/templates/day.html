@@ -189,13 +189,6 @@
           <textarea id="edit-html" class="textarea" rows="9"></textarea>
         </div>
         <div class="form-group">
-          <label class="label">Header HTML
-            <span class="text-muted" style="font-weight:400"> — optional, renders under the title when "Include header" is on</span>
-          </label>
-          <textarea id="edit-header-html" class="textarea" rows="4"
-                    placeholder="<h2>Issue intro…</h2>"></textarea>
-        </div>
-        <div class="form-group">
           <label class="label">Article HTML
             <span class="text-muted" style="font-weight:400"> — use <code>{title}</code> <code>{url}</code> <code>{summary}</code> etc.</span>
           </label>
@@ -294,7 +287,6 @@ function loadTemplateIntoEditor(id) {
       currentTemplateData = t;
       document.getElementById('edit-name').value = t.name || '';
       document.getElementById('edit-html').value = t.html || '';
-      document.getElementById('edit-header-html').value = t.header_html || '';
       document.getElementById('edit-article-html').value = t.article_html || '';
       document.getElementById('edit-builtin-note').style.display = t.is_builtin ? 'block' : 'none';
     });
@@ -309,7 +301,6 @@ function saveExisting() {
     description:  currentTemplateData.description || '',
     subject:      currentTemplateData.subject || 'SecDigest — {date}',
     html:         document.getElementById('edit-html').value,
-    header_html:  document.getElementById('edit-header-html').value,
     article_html: document.getElementById('edit-article-html').value,
   });
   document.body.appendChild(form);
@@ -332,7 +323,6 @@ function saveAsNew() {
     description:  '',
     subject:      currentTemplateData.subject || 'SecDigest — {date}',
     html:         document.getElementById('edit-html').value,
-    header_html:  document.getElementById('edit-header-html').value,
     article_html: document.getElementById('edit-article-html').value,
   });
   document.body.appendChild(form);

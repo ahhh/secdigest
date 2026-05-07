@@ -114,6 +114,10 @@ DB_CONFIG_DEFAULTS = {
     "base_url":      os.environ.get("BASE_URL", "http://localhost:8000"),
     "auto_send":     "0",
     "feedback_enabled": "1",
+    # Global newsletter header — same markup gets injected into every
+    # issue whose per-newsletter "Include header" toggle is on. Lives in
+    # config_kv (not on the template) so it doesn't fork across templates.
+    "header_html":   "",
     # Voice summaries (ElevenLabs TTS → S3). Disabled by default; the Settings
     # page is the source of truth. The keys are seeded as empty strings so that
     # cfg_get returns "" rather than None when no value is set.

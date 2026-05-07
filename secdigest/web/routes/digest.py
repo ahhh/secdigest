@@ -257,12 +257,8 @@ async def _preview(request: Request, kind: str, date_str: str,
     if not any(a.get("included", 1) for a in articles):
         return _placeholder("No included articles — toggle some on in the curator.")
     voice_block = mailer._voice_block_for_preview(digest["id"])
-    header_block = ""
-    if include_header:
-        tid = template_id or None
-        tmpl = db.email_template_get(tid) if tid else db.email_template_default()
-        if tmpl:
-            header_block = mailer._wrap_header_html(tmpl.get("header_html") or "")
+    header_block = mailer._wrap_header_html(db.cfg_get("header_html") or "") \
+        if include_header else ""
     return HTMLResponse(
         mailer.render_email_html(digest, articles, template_id or None,
                                  include_toc=bool(include_toc),

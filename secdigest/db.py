@@ -437,6 +437,7 @@ def init_db():
         _migrate_subscriber_confirmation(conn)
         _migrate_builtin_template_feedback(conn)
         _migrate_email_template_header(conn)
+        _migrate_header_to_global(conn)
 
 
 def _seed_config(conn):
@@ -655,13 +656,49 @@ def _migrate_add_mobile_templates(conn):
 
 
 def _migrate_email_template_header(conn):
-    """Add header_html column to email_templates for older DBs. Defaulting to
-    empty means existing templates render unchanged until an admin adds custom
-    header markup, so this migration is a no-behaviour-change one-shot."""
+    """Add header_html column to email_templates for older DBs.
+
+    History: this column is a vestige of the original per-template header
+    design. The header is now a single global value stored in config_kv (see
+    `_migrate_header_to_global`), but the column stays in the schema so we
+    don't have to do a destructive table-rebuild migration. New code never
+    reads or writes it; the column is dead but harmless."""
     cols = {r[1] for r in conn.execute("PRAGMA table_info(email_templates)").fetchall()}
     if "header_html" in cols:
         return
     conn.execute("ALTER TABLE email_templates ADD COLUMN header_html TEXT DEFAULT ''")
+    conn.commit()
+
+
+def _migrate_header_to_global(conn):
+    """One-shot lift of per-template header_html → global config_kv.header_html.
+
+    The header was briefly modelled as a per-template field; we moved it to a
+    single global value to keep behaviour consistent regardless of which
+    template an admin picks for a given issue. If a previous build wrote a
+    non-empty header_html on any template, copy the first one we find into
+    the global slot so the admin doesn't lose their work, then null out the
+    template column so the dead field can't shadow the real one in any UI
+    that still happens to surface it."""
+    # Only do work if the global value isn't already set.
+    existing = conn.execute(
+        "SELECT value FROM config_kv WHERE key='header_html'"
+    ).fetchone()
+    if existing and (existing[0] or ""):
+        return
+    row = conn.execute(
+        "SELECT id, header_html FROM email_templates "
+        "WHERE header_html IS NOT NULL AND header_html != '' "
+        "ORDER BY id LIMIT 1"
+    ).fetchone()
+    if not row:
+        return
+    conn.execute(
+        "INSERT INTO config_kv(key,value) VALUES('header_html', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (row[1],),
+    )
+    conn.execute("UPDATE email_templates SET header_html='' WHERE header_html IS NOT NULL")
     conn.commit()
 
 
@@ -1348,12 +1385,12 @@ def email_template_default() -> dict | None:
 
 
 def email_template_create(name: str, description: str, subject: str, html: str,
-                            article_html: str, header_html: str = "") -> dict:
+                            article_html: str) -> dict:
     with _lock:
         cur = _get_conn().execute(
-            "INSERT INTO email_templates(name, description, subject, html, article_html, header_html) "
-            "VALUES (?,?,?,?,?,?)",
-            (name, description, subject, html, article_html, header_html),
+            "INSERT INTO email_templates(name, description, subject, html, article_html) "
+            "VALUES (?,?,?,?,?)",
+            (name, description, subject, html, article_html),
         )
         _get_conn().commit()
     return dict(_get_conn().execute("SELECT * FROM email_templates WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -1362,7 +1399,10 @@ def email_template_create(name: str, description: str, subject: str, html: str,
 def email_template_update(id: int, **kwargs):
     if not kwargs:
         return
-    allowed = {"name", "description", "subject", "html", "article_html", "header_html"}
+    # header_html is intentionally NOT in this allowlist — it lives in
+    # config_kv now (see _migrate_header_to_global). Adding it back here
+    # would re-fork the header content per-template and undo the lift.
+    allowed = {"name", "description", "subject", "html", "article_html"}
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"email_template_update: disallowed columns {bad}")

@@ -187,13 +187,10 @@ async def day_preview(request: Request, date_str: str, template_id: int = 0,
     tid = template_id or None
     voice_block = mailer._voice_block_for_preview(newsletter["id"])
     # Preview is query-param driven (so the toggle live-updates without
-    # persisting); for header we resolve the template directly from `tid`
-    # rather than going through _header_block_for, which reads the DB toggle.
-    header_block = ""
-    if include_header:
-        tmpl = db.email_template_get(tid) if tid else db.email_template_default()
-        if tmpl:
-            header_block = mailer._wrap_header_html(tmpl.get("header_html") or "")
+    # persisting). The header content itself lives in global config_kv,
+    # not on the template, so a template switch never changes the header.
+    header_block = mailer._wrap_header_html(db.cfg_get("header_html") or "") \
+        if include_header else ""
     return HTMLResponse(
         mailer.render_email_html(newsletter, articles, tid,
                                  include_toc=bool(include_toc),

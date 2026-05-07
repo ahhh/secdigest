@@ -7,6 +7,34 @@
   <button class="btn btn-outline" onclick="toggleNewForm()">+ New Template</button>
 </div>
 
+{% if request.query_params.get('msg') %}
+<div class="flash flash-{{ request.query_params.get('status', 'info') }}" style="margin-bottom:16px;">
+  {{ request.query_params.get('msg') }}
+</div>
+{% endif %}
+
+<div class="form-card" style="margin-bottom:24px;">
+  <div class="section-label">Newsletter Header
+    <span class="text-muted" style="font-weight:400;font-size:.85em;margin-left:6px;">
+      &mdash; renders under the title, before the first article. Toggle per-issue in the email builder. Used by every template.
+    </span>
+  </div>
+  <form action="/email-templates/header" method="post">
+    {{ csrf_input(request) }}
+    <div class="form-group">
+      <label class="label">Header HTML
+        <span class="text-muted" style="font-weight:400">(supports <code>{date}</code>)</span>
+      </label>
+      <textarea name="header_html" class="textarea" rows="5"
+                placeholder="<h2 style=&quot;color:#39ff14&quot;>This week's wire</h2><p>Editor's intro goes here…</p>">{{ header_html }}</textarea>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">Save Header</button>
+    <span class="text-muted" style="font-size:.8em;margin-left:10px;">
+      Leave blank to disable the header globally.
+    </span>
+  </form>
+</div>
+
 <div id="new-form" style="display:none" class="form-card" style="margin-bottom:24px;">
   <div class="section-label">New Template</div>
   <form action="/email-templates/new" method="post">
@@ -28,13 +56,6 @@
     <div class="form-group">
       <label class="label">Wrapper HTML <span class="text-muted">(use {articles} and {date} as placeholders)</span></label>
       <textarea name="html" class="textarea" rows="10" required placeholder="<!DOCTYPE html>...{articles}..."></textarea>
-    </div>
-    <div class="form-group">
-      <label class="label">Header HTML
-        <span class="text-muted">(optional &mdash; renders under the title, before the first article. Toggle per-issue in the email builder. Supports {date}.)</span>
-      </label>
-      <textarea name="header_html" class="textarea" rows="4"
-                placeholder="<h2 style=&quot;color:#39ff14&quot;>This week's wire</h2><p>Editor's intro goes here…</p>"></textarea>
     </div>
     <div class="form-group">
       <label class="label">Article HTML <span class="text-muted">(use {number} {title} {url} {hn_url} {summary} {hn_score} {hn_comments})</span></label>
@@ -86,13 +107,6 @@
       <div class="form-group">
         <label class="label">Wrapper HTML</label>
         <textarea name="html" class="textarea" rows="12">{{ tmpl.html }}</textarea>
-      </div>
-      <div class="form-group">
-        <label class="label">Header HTML
-          <span class="text-muted">(optional &mdash; toggle per-issue from the email builder)</span>
-        </label>
-        <textarea name="header_html" class="textarea" rows="4"
-                  placeholder="<h2>Issue intro…</h2>">{{ tmpl.header_html or '' }}</textarea>
       </div>
       <div class="form-group">
         <label class="label">Article HTML</label>
