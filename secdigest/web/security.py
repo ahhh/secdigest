@@ -53,6 +53,7 @@ def is_safe_external_url(url: str) -> bool:
 _LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _SUBSCRIBE_ATTEMPTS: dict[str, list[float]] = {}
 _UNSUBSCRIBE_ATTEMPTS: dict[str, list[float]] = {}
+_FEEDBACK_ATTEMPTS: dict[str, list[float]] = {}
 
 _LOGIN_WINDOW_SECONDS = 900           # 15 minutes
 _LOGIN_MAX_ATTEMPTS = 10
@@ -60,6 +61,12 @@ _SUBSCRIBE_WINDOW_SECONDS = 3600      # 1 hour
 _SUBSCRIBE_MAX = 5
 _UNSUBSCRIBE_WINDOW_SECONDS = 3600
 _UNSUBSCRIBE_MAX = 10
+# Feedback is mailed daily/weekly/monthly so a hot inbox can produce ~5–10 clicks
+# in quick succession (multiple devices, accidental double-clicks). Set the cap
+# loosely — the UNIQUE(subscriber, newsletter) constraint means duplicate clicks
+# are upserts, not new rows, so abuse cost is bounded server-side anyway.
+_FEEDBACK_WINDOW_SECONDS = 3600
+_FEEDBACK_MAX = 60
 
 _BUCKET_MAX_KEYS = 10_000             # absolute cap before a forced sweep
 
@@ -131,3 +138,12 @@ def unsubscribe_allowed(request: Request) -> bool:
 
 def unsubscribe_record(request: Request) -> None:
     _bucket_record(_UNSUBSCRIBE_ATTEMPTS, _client_ip(request), _UNSUBSCRIBE_WINDOW_SECONDS)
+
+
+def feedback_allowed(request: Request) -> bool:
+    return _bucket_allowed(_FEEDBACK_ATTEMPTS, _client_ip(request),
+                            _FEEDBACK_WINDOW_SECONDS, _FEEDBACK_MAX)
+
+
+def feedback_record_attempt(request: Request) -> None:
+    _bucket_record(_FEEDBACK_ATTEMPTS, _client_ip(request), _FEEDBACK_WINDOW_SECONDS)

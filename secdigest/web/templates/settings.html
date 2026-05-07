@@ -102,6 +102,16 @@
       <input type="text" name="base_url" value="{{ cfg.base_url }}"
              class="input" placeholder="http://localhost:8000">
     </div>
+    <div class="form-group">
+      <label class="checkbox-label">
+        <input type="checkbox" name="feedback_enabled"
+               {% if cfg.feedback_enabled == '1' %}checked{% endif %}>
+        Show signal / noise feedback buttons in emails
+      </label>
+      <p class="text-muted" style="font-size:.8em;margin:4px 0 0;line-height:1.4;">
+        Subscribers can rate each issue with one click. Counts surface next to each name on the Subscribers page.
+      </p>
+    </div>
   </div>
 
   <div class="settings-section">

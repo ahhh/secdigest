@@ -63,7 +63,17 @@
     <tr class="{% if not s.active %}row-muted{% endif %}"
         data-search="{{ (s.email ~ ' ' ~ (s.name or '')) | lower }}">
       <td class="mono">{{ s.email }}</td>
-      <td>{{ s.name or '—' }}</td>
+      <td>
+        {{ s.name or '—' }}
+        {% set fb = feedback_counts.get(s.id) %}
+        {% if fb and (fb.signal or fb.noise) %}
+        <span class="text-muted" style="font-size:.78em;margin-left:6px;white-space:nowrap;"
+              title="signal: {{ fb.signal }} · noise: {{ fb.noise }}">
+          <span style="color:var(--green,#3fb950)">&#x1F44D;{{ fb.signal }}</span>
+          <span style="color:var(--red,#f85149);margin-left:4px;">&#x1F44E;{{ fb.noise }}</span>
+        </span>
+        {% endif %}
+      </td>
       <td>
         <form action="/subscribers/{{ s.id }}/cadence" method="post" style="display:inline">
           {{ csrf_input(request) }}

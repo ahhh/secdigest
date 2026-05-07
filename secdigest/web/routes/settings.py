@@ -67,6 +67,7 @@ async def save_settings(request: Request):
         db.cfg_set("smtp_pass", crypto.encrypt(form["smtp_pass"]))
 
     db.cfg_set("auto_send", "1" if form.get("auto_send") else "0")
+    db.cfg_set("feedback_enabled", "1" if form.get("feedback_enabled") else "0")
 
     if form.get("new_password"):
         db.cfg_set("password_hash", hash_password(form["new_password"]))

@@ -109,6 +109,15 @@ CREATE TABLE IF NOT EXISTS email_templates (
     is_builtin   INTEGER DEFAULT 0,
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS feedback (
+    id            INTEGER PRIMARY KEY,
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+    newsletter_id INTEGER NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
+    vote          TEXT    NOT NULL CHECK (vote IN ('signal','noise')),
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(subscriber_id, newsletter_id)
+);
 """
 
 DEFAULT_PROMPTS = [
@@ -151,7 +160,7 @@ _TMPL_DARK_HTML = """\
 </td></tr>
 {articles}
 <tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -176,7 +185,7 @@ _TMPL_LIGHT_HTML = """\
 <table width="100%" cellpadding="0" cellspacing="0">{articles}</table>
 </td></tr>
 <tr><td style="padding:20px 32px 28px;font-size:.75em;color:#8c959f;border-top:1px solid #e1e4e8;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#8c959f;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -199,7 +208,7 @@ _TMPL_MINIMAL_HTML = """\
 </td></tr>
 {articles}
 <tr><td style="padding-top:32px;font-size:.75em;color:#aaaaaa;border-top:1px solid #eeeeee;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#aaaaaa;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -226,7 +235,7 @@ _TMPL_GRID_HTML = """\
 </table>
 </td></tr>
 <tr><td style="padding-top:20px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -277,7 +286,7 @@ SecDigest daily &mdash; {date} &middot; top security stories, summarised.
 </td></tr>
 {articles}
 <tr><td style="padding:24px 4px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7681;border-top:1px solid #21262d;">
-You're receiving this because you subscribed to SecDigest.<br>
+{feedback_block}You're receiving this because you subscribed to SecDigest.<br>
 <a href="{unsubscribe_url}" style="color:#58a6ff;text-decoration:underline;">Unsubscribe</a>
 </td></tr>
 </table>
@@ -318,7 +327,7 @@ SecDigest daily &mdash; {date} &middot; top security stories, summarised.
 </table>
 </td></tr>
 <tr><td style="padding:18px 20px 22px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7781;border-top:1px solid #e1e4e8;background:#fafbfc;" bgcolor="#fafbfc">
-You're receiving this because you subscribed to SecDigest.<br>
+{feedback_block}You're receiving this because you subscribed to SecDigest.<br>
 <a href="{unsubscribe_url}" style="color:#0969da;text-decoration:underline;">Unsubscribe</a>
 </td></tr>
 </table>
@@ -413,6 +422,7 @@ def init_db():
         _migrate_article_source_name(conn)
         _migrate_subscriber_cadence(conn)
         _migrate_subscriber_confirmation(conn)
+        _migrate_builtin_template_feedback(conn)
 
 
 def _seed_config(conn):
@@ -630,6 +640,31 @@ def _migrate_add_mobile_templates(conn):
         conn.commit()
 
 
+def _migrate_builtin_template_feedback(conn):
+    """Inject the {feedback_block} placeholder above the unsubscribe footer in
+    built-in templates that pre-date the feedback feature. The renderer always
+    substitutes the placeholder (with empty string when feedback is disabled),
+    so a missing placeholder just means the buttons never appear."""
+    rows = conn.execute(
+        "SELECT id, html FROM email_templates WHERE is_builtin=1"
+    ).fetchall()
+    for row in rows:
+        if "{feedback_block}" in row[1]:
+            continue
+        # The unsubscribe boilerplate has been a stable sentinel across every
+        # built-in template since the unsubscribe migration landed; placing the
+        # placeholder right before it keeps feedback buttons visually adjacent
+        # to the unsubscribe link in the footer.
+        if "You're receiving this because you subscribed to SecDigest" in row[1]:
+            new_html = row[1].replace(
+                "You're receiving this because you subscribed to SecDigest",
+                "{feedback_block}You're receiving this because you subscribed to SecDigest",
+                1,
+            )
+            conn.execute("UPDATE email_templates SET html=? WHERE id=?", (new_html, row[0]))
+    conn.commit()
+
+
 def _migrate_builtin_template_unsubscribe(conn):
     """Add {unsubscribe_url} footer link to built-in templates that don't have it yet."""
     rows = conn.execute(
@@ -703,6 +738,11 @@ def newsletter_get_or_create(date_str: str, kind: str = "daily",
     return dict(conn.execute(
         "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
     ).fetchone())
+
+
+def newsletter_get_by_id(id: int) -> dict | None:
+    row = _get_conn().execute("SELECT * FROM newsletters WHERE id=?", (id,)).fetchone()
+    return dict(row) if row else None
 
 
 def newsletter_get(date_str: str, kind: str = "daily") -> dict | None:
@@ -1141,6 +1181,50 @@ def subscriber_confirm(token: str) -> dict | None:
     return dict(_get_conn().execute(
         "SELECT * FROM subscribers WHERE id=?", (row["id"],)
     ).fetchone())
+
+
+# ── Feedback (signal / noise) ────────────────────────────────────────────────
+
+def feedback_record(subscriber_id: int, newsletter_id: int, vote: str) -> None:
+    """Upsert a vote — a subscriber can change their mind on a given newsletter,
+    but only the latest vote counts. The (subscriber_id, newsletter_id) UNIQUE
+    constraint enforces one row per pair; ON CONFLICT swaps in the new vote."""
+    if vote not in ("signal", "noise"):
+        raise ValueError(f"feedback_record: bad vote {vote!r}")
+    with _lock:
+        _get_conn().execute(
+            "INSERT INTO feedback(subscriber_id, newsletter_id, vote) VALUES (?,?,?) "
+            "ON CONFLICT(subscriber_id, newsletter_id) "
+            "DO UPDATE SET vote=excluded.vote, created_at=CURRENT_TIMESTAMP",
+            (subscriber_id, newsletter_id, vote),
+        )
+        _get_conn().commit()
+
+
+def feedback_counts_by_subscriber() -> dict[int, dict[str, int]]:
+    """One pass over the feedback table, grouped by subscriber. Returns
+    {sub_id: {'signal': int, 'noise': int}}; subscribers with no feedback are
+    absent from the result (callers should default to zero)."""
+    rows = _get_conn().execute(
+        "SELECT subscriber_id, vote, COUNT(*) AS n FROM feedback "
+        "GROUP BY subscriber_id, vote"
+    ).fetchall()
+    out: dict[int, dict[str, int]] = {}
+    for r in rows:
+        out.setdefault(r["subscriber_id"], {"signal": 0, "noise": 0})[r["vote"]] = r["n"]
+    return out
+
+
+def feedback_for_newsletter(newsletter_id: int) -> dict[str, int]:
+    """Aggregate signal/noise totals for a single newsletter."""
+    rows = _get_conn().execute(
+        "SELECT vote, COUNT(*) AS n FROM feedback WHERE newsletter_id=? GROUP BY vote",
+        (newsletter_id,),
+    ).fetchall()
+    out = {"signal": 0, "noise": 0}
+    for r in rows:
+        out[r["vote"]] = r["n"]
+    return out
 
 
 # ── LLM Audit Log ─────────────────────────────────────────────────────────────

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>secdigest // {% if ok %}signal logged{% else %}link dead{% endif %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="grid-bg" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <span class="prompt">&gt;</span>
+    <span class="brand">secdigest<span class="cursor">_</span></span>
+    <span class="topbar-meta">// {% if ok %}feedback logged{% else %}feedback{% endif %}</span>
+  </header>
+
+  <main class="hero narrow">
+    {% if ok %}
+      {% if vote == 'signal' %}
+        <h1>noted. signal.</h1>
+        <p class="lead">
+          tagged this issue as <strong class="hl">signal</strong>. we'll lean
+          harder on whatever was in it. thanks for the bump.
+        </p>
+      {% else %}
+        <h1>noted. noise.</h1>
+        <p class="lead">
+          tagged this issue as <strong class="hl">noise</strong>. we'll dial
+          back on this kind of stuff. appreciate the honesty.
+        </p>
+      {% endif %}
+      <p class="fineprint">
+        you can vote again on this issue &mdash; only your latest vote sticks.
+      </p>
+    {% else %}
+      <h1>can't log that.</h1>
+      <p class="lead">{{ message }}</p>
+    {% endif %}
+    <p class="back"><a href="/" class="link-back">&lt; back</a></p>
+  </main>
+</body>
+</html>

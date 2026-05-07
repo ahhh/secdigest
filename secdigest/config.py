@@ -113,5 +113,6 @@ DB_CONFIG_DEFAULTS = {
     "max_curator_articles": os.environ.get("MAX_CURATOR_ARTICLES", "10"),
     "base_url":      os.environ.get("BASE_URL", "http://localhost:8000"),
     "auto_send":     "0",
+    "feedback_enabled": "1",
     "password_hash": DEFAULT_PASSWORD_HASH,
 }
