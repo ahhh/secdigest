@@ -184,13 +184,15 @@ def score_articles(articles: list[dict]) -> list[dict]:
 
 
 def _format_fetch_summary(hn: int, rss: int, new_count: int,
-                          stored: int, included: int) -> str:
+                          stored: int, included: int, *,
+                          pool_full: bool = False) -> str:
     """Compose the human-facing one-liner shown in the day-curator banner.
 
     Branches by *why* a fetch produced 0 stored articles, because the operator
     can act on each cause differently:
       • feeds returned nothing → maybe HN_MIN_SCORE is too high, or RSS feeds are dead
       • dedup ate everything → normal on a re-fetch of an already-seen day
+      • pool already at max_articles → drop articles or raise the cap
       • scoring rejected everything → curation prompt may be too strict
     """
     if hn == 0 and rss == 0:
@@ -198,35 +200,50 @@ def _format_fetch_summary(hn: int, rss: int, new_count: int,
     if new_count == 0:
         return f"Pulled {hn} HN + {rss} RSS → 0 new (all already seen)"
     if stored == 0:
+        if pool_full:
+            return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
+                    f"but pool already at max_articles cap")
         return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
                 f"but all below relevance threshold")
     return f"Pulled {hn} HN + {rss} RSS → {stored} stored, {included} included"
 
 
 def _record_fetch_summary(date_str: str, hn: int, rss: int,
-                          new_count: int, stored: int, included: int) -> None:
+                          new_count: int, stored: int, included: int,
+                          *, pool_full: bool = False) -> None:
     """Persist the latest fetch outcome to config_kv. Read by the day-curator
     route to render a banner — the date stamp lets the route show the banner
     only on the page that was actually fetched, not on every day view."""
     db.cfg_set("last_fetch_summary", _format_fetch_summary(
-        hn, rss, new_count, stored, included))
+        hn, rss, new_count, stored, included, pool_full=pool_full))
     db.cfg_set("last_fetch_summary_date", date_str)
 
 
 async def run_fetch(date_str: str | None = None) -> dict:
-    """Full pipeline: fetch HN + RSS → score → store. Returns the newsletter dict."""
+    """Full pipeline: fetch HN + RSS → dedup → score → append unique articles
+    into the day's pool. Idempotent on URLs (the dedup runs against every URL
+    we've ever stored), so re-running on the same day is safe — it tops up
+    the pool with whatever is freshly available rather than short-circuiting.
+
+    Returns the newsletter dict.
+    """
     if date_str is None:
         date_str = dt_date.today().isoformat()
 
     newsletter = db.newsletter_get_or_create(date_str)
 
-    if db.article_count(newsletter["id"]) > 0:
-        # Don't overwrite a prior fetch summary — the route surfaces "Articles
-        # already fetched" via ?msg= for this short-circuit case.
-        print(f"[fetcher] {date_str} already has articles, skipping")
-        return newsletter
+    # Snapshot the existing pool so re-fetches APPEND rather than reset:
+    #   • position picks up where the existing pool ends
+    #   • remaining caps come off the per-day totals (max_articles, max_curator)
+    #   • HN reservation only kicks in if existing HN count is below hn_pool_min
+    existing_articles = db.article_list(newsletter["id"])
+    existing_count = len(existing_articles)
+    existing_included = sum(1 for a in existing_articles if a.get("included", 1))
+    existing_hn = sum(1 for a in existing_articles if a.get("source", "hn") == "hn")
+    base_position = max((a["position"] for a in existing_articles), default=-1) + 1
 
-    print(f"[fetcher] fetching HN top + new for {date_str}...")
+    print(f"[fetcher] fetching HN top + new for {date_str} "
+          f"(existing pool: {existing_count})")
     candidates = await fetch_all_candidates()
 
     from secdigest import rss as rss_module
@@ -250,12 +267,24 @@ async def run_fetch(date_str: str | None = None) -> dict:
                               new_count=0, stored=0, included=0)
         return newsletter
 
-    print(f"[fetcher] scoring {len(new_stories)} stories...")
-    scored = score_articles(new_stories)
-
     max_articles = int(db.cfg_get("max_articles") or 15)
     max_curator = int(db.cfg_get("max_curator_articles") or 10)
     hn_pool_min = int(db.cfg_get("hn_pool_min") or 10)
+
+    remaining_pool = max(0, max_articles - existing_count)
+    remaining_curator = max(0, max_curator - existing_included)
+
+    if remaining_pool == 0:
+        # Pool already at the per-day cap. Distinct from "all already seen" —
+        # we *did* find new candidates, but there's no room. Operator action:
+        # bump max_articles or drop something from the pool.
+        _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
+                              new_count=len(new_stories),
+                              stored=0, included=0, pool_full=True)
+        return newsletter
+
+    print(f"[fetcher] scoring {len(new_stories)} stories...")
+    scored = score_articles(new_stories)
 
     relevant = sorted(
         [s for s in scored if s["relevance_score"] >= 5.0],
@@ -263,11 +292,12 @@ async def run_fetch(date_str: str | None = None) -> dict:
         reverse=True,
     )
 
-    # Reserve HN slots so RSS-heavy days don't crowd HN out of the pool. Walk `relevant`
-    # in current rank order and skim the top HN until the reservation is met; everything
-    # else competes for the remaining slots by pure relevance.
+    # Reserve HN slots so RSS-heavy days don't crowd HN out. The reservation
+    # runs against the day's *cumulative* HN count: if the existing pool
+    # already has plenty of HN, no fresh slots get reserved this fetch.
     relevant_hn = sum(1 for s in relevant if s.get("source", "hn") == "hn")
-    hn_target = min(hn_pool_min, relevant_hn, max_articles)
+    hn_shortfall = max(0, hn_pool_min - existing_hn)
+    hn_target = min(hn_shortfall, relevant_hn, remaining_pool)
     reserved: list[dict] = []
     remainder: list[dict] = []
     for s in relevant:
@@ -276,10 +306,12 @@ async def run_fetch(date_str: str | None = None) -> dict:
         else:
             remainder.append(s)
     remainder.sort(key=lambda x: x["relevance_score"], reverse=True)
-    final = reserved + remainder[: max(0, max_articles - len(reserved))]
+    final = reserved + remainder[: max(0, remaining_pool - len(reserved))]
 
     for pos, story in enumerate(final):
-        included = 1 if pos < max_curator else 0
+        # New articles default to included=1 only while curator slots remain;
+        # the rest land in the pool for manual promotion.
+        included = 1 if pos < remaining_curator else 0
         db.article_insert(
             newsletter_id=newsletter["id"],
             hn_id=story.get("id") if story.get("source", "hn") == "hn" else None,
@@ -289,16 +321,16 @@ async def run_fetch(date_str: str | None = None) -> dict:
             hn_comments=story.get("comments", 0),
             relevance_score=story["relevance_score"],
             relevance_reason=story["relevance_reason"],
-            position=pos,
+            position=base_position + pos,
             included=included,
             source=story.get("source", "hn"),
             source_name=story.get("source_name"),
         )
 
-    included_count = min(len(final), max_curator)
+    included_count = min(len(final), remaining_curator)
     print(f"[fetcher] stored {len(final)} articles "
           f"({len(reserved)} HN reserved, {len(final) - len(reserved)} other), "
-          f"{included_count} included")
+          f"{included_count} included; pool now {existing_count + len(final)}")
     _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
                           new_count=len(new_stories),
                           stored=len(final), included=included_count)

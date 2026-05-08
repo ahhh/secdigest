@@ -180,9 +180,9 @@ async def day_view(request: Request, date_str: str):
 async def day_fetch(request: Request, date_str: str):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    newsletter = db.newsletter_get(date_str)
-    if newsletter and db.article_count(newsletter["id"]) > 0:
-        return RedirectResponse(f"/day/{date_str}?msg=Articles+already+fetched", status_code=302)
+    # Re-fetch is supported: the fetcher's URL-level dedup ensures repeat
+    # pulls only append articles never seen before. The fetch_summary banner
+    # tells the operator what each click actually produced.
     _spawn_bg(fetcher.run_fetch(date_str))
     return RedirectResponse(f"/day/{date_str}?fetching=1", status_code=302)
 
