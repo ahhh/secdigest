@@ -3,7 +3,7 @@ import asyncio
 import re
 from datetime import date as dt_date
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 # Strict canonical ISO date — Python 3.11+'s date.fromisoformat() accepts
@@ -16,6 +16,23 @@ from secdigest.web.auth import is_authed, redirect_login
 from secdigest.web.csrf import verify_csrf
 
 router = APIRouter(dependencies=[Depends(verify_csrf)])
+
+
+# Pin fire-and-forget tasks to a strong-reffed module-level set. asyncio's
+# event loop only holds *weak* references to tasks (Python 3.11+), so an
+# orphan returned by asyncio.create_task() can be garbage-collected before
+# its coroutine finishes — symptom: the click "worked", the spinner spun,
+# but nothing was stored. The done_callback drains the set so it doesn't
+# grow without bound under steady load.
+_BG_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_bg(coro) -> asyncio.Task:
+    """Schedule a coroutine and keep a strong reference until it completes."""
+    task = asyncio.create_task(coro)
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return task
 
 
 def _today() -> str:
@@ -132,6 +149,11 @@ async def day_view(request: Request, date_str: str):
     active_voice = db.newsletter_get_voice_enabled(newsletter["id"]) if newsletter else False
     voice_summary_enabled = db.cfg_get("voice_summary_enabled") == "1"
     voice_status = db.voice_audio_get(newsletter["id"]) if newsletter else None
+    # Fetch-summary banner: only render when the most recent fetch was for
+    # *this* date, so navigating to a different day doesn't surface stale
+    # numbers from another day's pull.
+    fetch_summary = (db.cfg_get("last_fetch_summary")
+                     if db.cfg_get("last_fetch_summary_date") == date_str else "")
     return templates.TemplateResponse("day.html", {
         "request": request,
         "date_str": date_str,
@@ -148,6 +170,7 @@ async def day_view(request: Request, date_str: str):
         "active_voice": active_voice,
         "voice_summary_enabled": voice_summary_enabled,
         "voice_status": voice_status,
+        "fetch_summary": fetch_summary,
     })
 
 
@@ -157,11 +180,20 @@ async def day_view(request: Request, date_str: str):
 async def day_fetch(request: Request, date_str: str):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
-    newsletter = db.newsletter_get(date_str)
-    if newsletter and db.article_count(newsletter["id"]) > 0:
-        return RedirectResponse(f"/day/{date_str}?msg=Articles+already+fetched", status_code=302)
-    asyncio.create_task(fetcher.run_fetch(date_str))
+    # Re-fetch is supported: the fetcher's URL-level dedup ensures repeat
+    # pulls only append articles never seen before. The fetch_summary banner
+    # tells the operator what each click actually produced.
+    _spawn_bg(fetcher.run_fetch(date_str))
     return RedirectResponse(f"/day/{date_str}?fetching=1", status_code=302)
+
+
+@router.post("/day/{date_str}/dismiss-fetch-summary")
+async def dismiss_fetch_summary(request: Request, date_str: str):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    db.cfg_set("last_fetch_summary", "")
+    db.cfg_set("last_fetch_summary_date", "")
+    return RedirectResponse(f"/day/{date_str}", status_code=302)
 
 
 @router.get("/day/{date_str}/preview", response_class=HTMLResponse)
@@ -226,7 +258,7 @@ async def day_summarize(request: Request, date_str: str):
     newsletter = db.newsletter_get(date_str)
     if not newsletter:
         return RedirectResponse(f"/day/{date_str}?msg=No+newsletter+found", status_code=302)
-    asyncio.create_task(asyncio.to_thread(summarizer.summarize_newsletter, newsletter["id"]))
+    _spawn_bg(asyncio.to_thread(summarizer.summarize_newsletter, newsletter["id"]))
     return RedirectResponse(f"/day/{date_str}?msg=Generating+summaries...", status_code=302)
 
 
@@ -290,6 +322,7 @@ async def auto_select(request: Request, date_str: str):
 
 @router.post("/day/{date_str}/article/add")
 async def add_article(request: Request, date_str: str,
+                      background_tasks: BackgroundTasks,
                       url: str = Form(""),
                       title: str = Form(...),
                       summary: str = Form(""),
@@ -318,7 +351,11 @@ async def add_article(request: Request, date_str: str,
     if summary.strip():
         db.article_update(article_id, summary=summary.strip())
     elif auto_summarize == "1":
-        asyncio.create_task(asyncio.to_thread(summarizer.summarize_article, article_id))
+        # BackgroundTasks (not asyncio.create_task) so Starlette holds a strong
+        # reference until the task completes. The previous create_task pattern
+        # left the task weakly-referenced, so Python 3.11+ could GC it before
+        # it ever ran — auto-generate looked checked but produced nothing.
+        background_tasks.add_task(summarizer.summarize_article, article_id)
     return RedirectResponse(f"/day/{date_str}", status_code=302)
 
 

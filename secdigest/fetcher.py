@@ -11,6 +11,17 @@ from secdigest import config, db
 HN_BASE = "https://hacker-news.firebaseio.com/v0"
 MODEL = "claude-haiku-4-5-20251001"
 
+# Network-tuning knobs. Lowered from earlier (200/100/Sem(20)/10s) after a
+# stuck fetch on a slow HN day waited ~3 minutes before the operator gave up.
+# At Sem(10) and limit=100, the absolute worst case is 100/10 * 5s = 50s per
+# feed if every item times out — a bound the outer wall-clock guard keeps
+# the whole pipeline under. See _run_fetch_pipeline / run_fetch.
+_HN_TOP_LIMIT = 100
+_HN_NEW_LIMIT = 50
+_HN_FETCH_CONCURRENCY = 10
+_HTTP_TIMEOUT_SECONDS = 5
+_RUN_FETCH_WALLCLOCK_SECONDS = 120
+
 CURATION_SYSTEM = """\
 You are a security news curator. Score Hacker News articles for relevance to security
 professionals. You will receive a batch of articles and must return a JSON array with
@@ -28,7 +39,7 @@ Respond with valid JSON only. No markdown fences."""
 
 async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict | list | None:
     try:
-        r = await client.get(url, timeout=10)
+        r = await client.get(url, timeout=_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -42,7 +53,7 @@ async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
     if not ids:
         return []
 
-    sem = asyncio.Semaphore(20)
+    sem = asyncio.Semaphore(_HN_FETCH_CONCURRENCY)
 
     async def fetch_one(sid):
         async with sem:
@@ -72,8 +83,8 @@ async def fetch_all_candidates() -> list[dict]:
     min_score = int(db.cfg_get("hn_min_score") or 50)
     async with httpx.AsyncClient() as client:
         top, new = await asyncio.gather(
-            _fetch_feed(client, "topstories", 200, min_score),
-            _fetch_feed(client, "newstories", 100, 5),
+            _fetch_feed(client, "topstories", _HN_TOP_LIMIT, min_score),
+            _fetch_feed(client, "newstories", _HN_NEW_LIMIT, 5),
         )
 
     seen: set[int] = set()
@@ -183,22 +194,116 @@ def score_articles(articles: list[dict]) -> list[dict]:
     return articles
 
 
+def _format_fetch_summary(hn: int, rss: int, new_count: int,
+                          stored: int, included: int, *,
+                          pool_full: bool = False) -> str:
+    """Compose the human-facing one-liner shown in the day-curator banner.
+
+    Branches by *why* a fetch produced 0 stored articles, because the operator
+    can act on each cause differently:
+      • feeds returned nothing → maybe HN_MIN_SCORE is too high, or RSS feeds are dead
+      • dedup ate everything → normal on a re-fetch of an already-seen day
+      • pool already at max_articles → drop articles or raise the cap
+      • scoring rejected everything → curation prompt may be too strict
+    """
+    if hn == 0 and rss == 0:
+        return "Pulled 0 HN + 0 RSS — feeds returned nothing"
+    if new_count == 0:
+        return f"Pulled {hn} HN + {rss} RSS → 0 new (all already seen)"
+    if stored == 0:
+        if pool_full:
+            return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
+                    f"but pool already at max_articles cap")
+        return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
+                f"but all below relevance threshold")
+    return f"Pulled {hn} HN + {rss} RSS → {stored} stored, {included} included"
+
+
+def _record_fetch_summary(date_str: str, hn: int, rss: int,
+                          new_count: int, stored: int, included: int,
+                          *, pool_full: bool = False) -> None:
+    """Persist the latest fetch outcome to config_kv. Read by the day-curator
+    route to render a banner — the date stamp lets the route show the banner
+    only on the page that was actually fetched, not on every day view."""
+    db.cfg_set("last_fetch_summary", _format_fetch_summary(
+        hn, rss, new_count, stored, included, pool_full=pool_full))
+    db.cfg_set("last_fetch_summary_date", date_str)
+
+
 async def run_fetch(date_str: str | None = None) -> dict:
-    """Full pipeline: fetch HN + RSS → score → store. Returns the newsletter dict."""
+    """Full pipeline entry point. Wraps the network-bound work in a wall-clock
+    guard so a slow HN day or a hung RSS feed can't pin the worker for
+    minutes — past incident: fetcher hung ~3 minutes on a slow HN day with
+    the prior 10s/200/100 settings, which led to a manual systemd stop.
+
+    Idempotent on URLs (dedup runs against every URL we've ever stored), so
+    a timeout that aborts mid-pipeline is safe — re-clicking picks up
+    whatever wasn't stored on the prior run.
+    """
     if date_str is None:
         date_str = dt_date.today().isoformat()
 
     newsletter = db.newsletter_get_or_create(date_str)
 
-    if db.article_count(newsletter["id"]) > 0:
-        print(f"[fetcher] {date_str} already has articles, skipping")
+    # Pool-full short-circuit: if there's no room for new articles, skip the
+    # network entirely. Distinct from the post-fetch pool_full case because
+    # this one didn't even attempt to pull — which is the action we want
+    # when the day's been topped up already.
+    existing_count = db.article_count(newsletter["id"])
+    max_articles = int(db.cfg_get("max_articles") or 15)
+    if existing_count >= max_articles:
+        print(f"[fetcher] {date_str} pool already at cap "
+              f"({existing_count}/{max_articles}) — skipping")
+        db.cfg_set(
+            "last_fetch_summary",
+            f"Pool already at max_articles cap "
+            f"({existing_count}/{max_articles}) — skipped fetch",
+        )
+        db.cfg_set("last_fetch_summary_date", date_str)
         return newsletter
 
-    print(f"[fetcher] fetching HN top + new for {date_str}...")
+    try:
+        return await asyncio.wait_for(
+            _run_fetch_pipeline(newsletter, date_str, max_articles),
+            timeout=_RUN_FETCH_WALLCLOCK_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        # The inner coroutine is cancelled mid-await; whatever articles it
+        # had inserted up to that point are already committed (SQLite WAL +
+        # per-insert commit). Surface the timeout in the banner so the
+        # operator knows why nothing finished — re-clicking is safe.
+        print(f"[fetcher] {date_str} fetch timed out after "
+              f"{_RUN_FETCH_WALLCLOCK_SECONDS}s")
+        db.cfg_set(
+            "last_fetch_summary",
+            f"Fetch timed out after {_RUN_FETCH_WALLCLOCK_SECONDS}s — "
+            f"HN or an RSS feed may be slow. Re-click to resume.",
+        )
+        db.cfg_set("last_fetch_summary_date", date_str)
+        return newsletter
+
+
+async def _run_fetch_pipeline(newsletter: dict, date_str: str,
+                              max_articles: int) -> dict:
+    """The network-bound pipeline body. Pulled out so run_fetch can wrap it
+    in asyncio.wait_for without losing the early-return paths."""
+    # Snapshot the existing pool so re-fetches APPEND rather than reset:
+    #   • position picks up where the existing pool ends
+    #   • remaining caps come off the per-day totals (max_articles, max_curator)
+    #   • HN reservation only kicks in if existing HN count is below hn_pool_min
+    existing_articles = db.article_list(newsletter["id"])
+    existing_count = len(existing_articles)
+    existing_included = sum(1 for a in existing_articles if a.get("included", 1))
+    existing_hn = sum(1 for a in existing_articles if a.get("source", "hn") == "hn")
+    base_position = max((a["position"] for a in existing_articles), default=-1) + 1
+
+    print(f"[fetcher] fetching HN top + new for {date_str} "
+          f"(existing pool: {existing_count})")
     candidates = await fetch_all_candidates()
 
     from secdigest import rss as rss_module
     rss_candidates = await asyncio.to_thread(rss_module.fetch_all_rss)
+    hn_count, rss_count = len(candidates), len(rss_candidates)
 
     historical_urls = db.article_all_urls()
     seen_urls: set[str] = set()
@@ -209,18 +314,31 @@ async def run_fetch(date_str: str | None = None) -> dict:
             seen_urls.add(url)
             new_stories.append(s)
 
-    print(f"[fetcher] {len(candidates)} HN + {len(rss_candidates)} RSS candidates, "
+    print(f"[fetcher] {hn_count} HN + {rss_count} RSS candidates, "
           f"{len(new_stories)} after dedup")
 
     if not new_stories:
+        _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
+                              new_count=0, stored=0, included=0)
+        return newsletter
+
+    max_curator = int(db.cfg_get("max_curator_articles") or 10)
+    hn_pool_min = int(db.cfg_get("hn_pool_min") or 10)
+
+    remaining_pool = max(0, max_articles - existing_count)
+    remaining_curator = max(0, max_curator - existing_included)
+
+    if remaining_pool == 0:
+        # Race-condition fallback: the pre-check in run_fetch would normally
+        # catch this, but a concurrent fetch could fill the pool while this
+        # one was waiting on the network. Same banner message either way.
+        _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
+                              new_count=len(new_stories),
+                              stored=0, included=0, pool_full=True)
         return newsletter
 
     print(f"[fetcher] scoring {len(new_stories)} stories...")
     scored = score_articles(new_stories)
-
-    max_articles = int(db.cfg_get("max_articles") or 15)
-    max_curator = int(db.cfg_get("max_curator_articles") or 10)
-    hn_pool_min = int(db.cfg_get("hn_pool_min") or 10)
 
     relevant = sorted(
         [s for s in scored if s["relevance_score"] >= 5.0],
@@ -228,11 +346,12 @@ async def run_fetch(date_str: str | None = None) -> dict:
         reverse=True,
     )
 
-    # Reserve HN slots so RSS-heavy days don't crowd HN out of the pool. Walk `relevant`
-    # in current rank order and skim the top HN until the reservation is met; everything
-    # else competes for the remaining slots by pure relevance.
-    hn_count = sum(1 for s in relevant if s.get("source", "hn") == "hn")
-    hn_target = min(hn_pool_min, hn_count, max_articles)
+    # Reserve HN slots so RSS-heavy days don't crowd HN out. The reservation
+    # runs against the day's *cumulative* HN count: if the existing pool
+    # already has plenty of HN, no fresh slots get reserved this fetch.
+    relevant_hn = sum(1 for s in relevant if s.get("source", "hn") == "hn")
+    hn_shortfall = max(0, hn_pool_min - existing_hn)
+    hn_target = min(hn_shortfall, relevant_hn, remaining_pool)
     reserved: list[dict] = []
     remainder: list[dict] = []
     for s in relevant:
@@ -241,10 +360,12 @@ async def run_fetch(date_str: str | None = None) -> dict:
         else:
             remainder.append(s)
     remainder.sort(key=lambda x: x["relevance_score"], reverse=True)
-    final = reserved + remainder[: max(0, max_articles - len(reserved))]
+    final = reserved + remainder[: max(0, remaining_pool - len(reserved))]
 
     for pos, story in enumerate(final):
-        included = 1 if pos < max_curator else 0
+        # New articles default to included=1 only while curator slots remain;
+        # the rest land in the pool for manual promotion.
+        included = 1 if pos < remaining_curator else 0
         db.article_insert(
             newsletter_id=newsletter["id"],
             hn_id=story.get("id") if story.get("source", "hn") == "hn" else None,
@@ -254,13 +375,17 @@ async def run_fetch(date_str: str | None = None) -> dict:
             hn_comments=story.get("comments", 0),
             relevance_score=story["relevance_score"],
             relevance_reason=story["relevance_reason"],
-            position=pos,
+            position=base_position + pos,
             included=included,
             source=story.get("source", "hn"),
             source_name=story.get("source_name"),
         )
 
+    included_count = min(len(final), remaining_curator)
     print(f"[fetcher] stored {len(final)} articles "
           f"({len(reserved)} HN reserved, {len(final) - len(reserved)} other), "
-          f"{min(len(final), max_curator)} included")
+          f"{included_count} included; pool now {existing_count + len(final)}")
+    _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
+                          new_count=len(new_stories),
+                          stored=len(final), included=included_count)
     return db.newsletter_get(date_str)
