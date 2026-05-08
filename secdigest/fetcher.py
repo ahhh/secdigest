@@ -11,6 +11,17 @@ from secdigest import config, db
 HN_BASE = "https://hacker-news.firebaseio.com/v0"
 MODEL = "claude-haiku-4-5-20251001"
 
+# Network-tuning knobs. Lowered from earlier (200/100/Sem(20)/10s) after a
+# stuck fetch on a slow HN day waited ~3 minutes before the operator gave up.
+# At Sem(10) and limit=100, the absolute worst case is 100/10 * 5s = 50s per
+# feed if every item times out — a bound the outer wall-clock guard keeps
+# the whole pipeline under. See _run_fetch_pipeline / run_fetch.
+_HN_TOP_LIMIT = 100
+_HN_NEW_LIMIT = 50
+_HN_FETCH_CONCURRENCY = 10
+_HTTP_TIMEOUT_SECONDS = 5
+_RUN_FETCH_WALLCLOCK_SECONDS = 120
+
 CURATION_SYSTEM = """\
 You are a security news curator. Score Hacker News articles for relevance to security
 professionals. You will receive a batch of articles and must return a JSON array with
@@ -28,7 +39,7 @@ Respond with valid JSON only. No markdown fences."""
 
 async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict | list | None:
     try:
-        r = await client.get(url, timeout=10)
+        r = await client.get(url, timeout=_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
         return r.json()
     except Exception:
@@ -42,7 +53,7 @@ async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
     if not ids:
         return []
 
-    sem = asyncio.Semaphore(20)
+    sem = asyncio.Semaphore(_HN_FETCH_CONCURRENCY)
 
     async def fetch_one(sid):
         async with sem:
@@ -72,8 +83,8 @@ async def fetch_all_candidates() -> list[dict]:
     min_score = int(db.cfg_get("hn_min_score") or 50)
     async with httpx.AsyncClient() as client:
         top, new = await asyncio.gather(
-            _fetch_feed(client, "topstories", 200, min_score),
-            _fetch_feed(client, "newstories", 100, 5),
+            _fetch_feed(client, "topstories", _HN_TOP_LIMIT, min_score),
+            _fetch_feed(client, "newstories", _HN_NEW_LIMIT, 5),
         )
 
     seen: set[int] = set()
@@ -220,18 +231,62 @@ def _record_fetch_summary(date_str: str, hn: int, rss: int,
 
 
 async def run_fetch(date_str: str | None = None) -> dict:
-    """Full pipeline: fetch HN + RSS → dedup → score → append unique articles
-    into the day's pool. Idempotent on URLs (the dedup runs against every URL
-    we've ever stored), so re-running on the same day is safe — it tops up
-    the pool with whatever is freshly available rather than short-circuiting.
+    """Full pipeline entry point. Wraps the network-bound work in a wall-clock
+    guard so a slow HN day or a hung RSS feed can't pin the worker for
+    minutes — past incident: fetcher hung ~3 minutes on a slow HN day with
+    the prior 10s/200/100 settings, which led to a manual systemd stop.
 
-    Returns the newsletter dict.
+    Idempotent on URLs (dedup runs against every URL we've ever stored), so
+    a timeout that aborts mid-pipeline is safe — re-clicking picks up
+    whatever wasn't stored on the prior run.
     """
     if date_str is None:
         date_str = dt_date.today().isoformat()
 
     newsletter = db.newsletter_get_or_create(date_str)
 
+    # Pool-full short-circuit: if there's no room for new articles, skip the
+    # network entirely. Distinct from the post-fetch pool_full case because
+    # this one didn't even attempt to pull — which is the action we want
+    # when the day's been topped up already.
+    existing_count = db.article_count(newsletter["id"])
+    max_articles = int(db.cfg_get("max_articles") or 15)
+    if existing_count >= max_articles:
+        print(f"[fetcher] {date_str} pool already at cap "
+              f"({existing_count}/{max_articles}) — skipping")
+        db.cfg_set(
+            "last_fetch_summary",
+            f"Pool already at max_articles cap "
+            f"({existing_count}/{max_articles}) — skipped fetch",
+        )
+        db.cfg_set("last_fetch_summary_date", date_str)
+        return newsletter
+
+    try:
+        return await asyncio.wait_for(
+            _run_fetch_pipeline(newsletter, date_str, max_articles),
+            timeout=_RUN_FETCH_WALLCLOCK_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        # The inner coroutine is cancelled mid-await; whatever articles it
+        # had inserted up to that point are already committed (SQLite WAL +
+        # per-insert commit). Surface the timeout in the banner so the
+        # operator knows why nothing finished — re-clicking is safe.
+        print(f"[fetcher] {date_str} fetch timed out after "
+              f"{_RUN_FETCH_WALLCLOCK_SECONDS}s")
+        db.cfg_set(
+            "last_fetch_summary",
+            f"Fetch timed out after {_RUN_FETCH_WALLCLOCK_SECONDS}s — "
+            f"HN or an RSS feed may be slow. Re-click to resume.",
+        )
+        db.cfg_set("last_fetch_summary_date", date_str)
+        return newsletter
+
+
+async def _run_fetch_pipeline(newsletter: dict, date_str: str,
+                              max_articles: int) -> dict:
+    """The network-bound pipeline body. Pulled out so run_fetch can wrap it
+    in asyncio.wait_for without losing the early-return paths."""
     # Snapshot the existing pool so re-fetches APPEND rather than reset:
     #   • position picks up where the existing pool ends
     #   • remaining caps come off the per-day totals (max_articles, max_curator)
@@ -267,7 +322,6 @@ async def run_fetch(date_str: str | None = None) -> dict:
                               new_count=0, stored=0, included=0)
         return newsletter
 
-    max_articles = int(db.cfg_get("max_articles") or 15)
     max_curator = int(db.cfg_get("max_curator_articles") or 10)
     hn_pool_min = int(db.cfg_get("hn_pool_min") or 10)
 
@@ -275,9 +329,9 @@ async def run_fetch(date_str: str | None = None) -> dict:
     remaining_curator = max(0, max_curator - existing_included)
 
     if remaining_pool == 0:
-        # Pool already at the per-day cap. Distinct from "all already seen" —
-        # we *did* find new candidates, but there's no room. Operator action:
-        # bump max_articles or drop something from the pool.
+        # Race-condition fallback: the pre-check in run_fetch would normally
+        # catch this, but a concurrent fetch could fill the pool while this
+        # one was waiting on the network. Same banner message either way.
         _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
                               new_count=len(new_stories),
                               stored=0, included=0, pool_full=True)

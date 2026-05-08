@@ -14,6 +14,8 @@ Test coverage:
     everywhere else
   • dismiss endpoint — clears both keys, redirects back to the day
 """
+import asyncio
+
 import pytest
 
 from secdigest import db, fetcher
@@ -246,12 +248,12 @@ async def test_run_fetch_re_pull_with_no_new_uniques_records_dedup_summary(
         "Pulled 1 HN + 0 RSS → 0 new (all already seen)"
 
 
-async def test_run_fetch_records_pool_full_when_at_max_articles_cap(
+async def test_run_fetch_pool_full_pre_check_skips_network(
         tmp_db, full_stubs):
-    """Pool is at max_articles already; re-fetch finds genuinely new
-    candidates but has nowhere to put them. Distinct from 'all already seen'
-    and from 'below relevance threshold' — the operator's action is to
-    raise the cap or drop articles, not to loosen the curation prompt."""
+    """Pool is at max_articles before the fetch starts — the pre-check in
+    run_fetch must short-circuit before any HTTP. Past incident: a fetch
+    on a slow HN day waited ~3 minutes only to discover there was no room.
+    Avoids that round-trip when we already know the answer."""
     db.cfg_set("max_articles", "2")  # tight cap so the test stays compact
 
     n = db.newsletter_get_or_create("2026-05-08")
@@ -264,27 +266,18 @@ async def test_run_fetch_records_pool_full_when_at_max_articles_cap(
             relevance_score=8.0, relevance_reason="seed", position=i,
         )
 
-    full_stubs.httpx.route("topstories.json", json_data=[6100, 6101])
-    full_stubs.httpx.route("newstories.json", json_data=[])
-    full_stubs.httpx.route(
-        "/item/6100.json",
-        json_data={"id": 6100, "type": "story", "title": "fresh-c",
-                   "url": "https://example.invalid/c",
-                   "score": 100, "descendants": 0},
-    )
-    full_stubs.httpx.route(
-        "/item/6101.json",
-        json_data={"id": 6101, "type": "story", "title": "fresh-d",
-                   "url": "https://example.invalid/d",
-                   "score": 100, "descendants": 0},
-    )
-
+    # Deliberately leave the httpx routes empty — if the pre-check fires,
+    # nothing should reach the stub.
     await fetcher.run_fetch("2026-05-08")
 
     assert len(db.article_list(n["id"])) == 2, "pool cap held — no appends"
     msg = db.cfg_get("last_fetch_summary")
-    assert "pool already at max_articles cap" in msg
-    assert "2 new" in msg
+    assert "skipped fetch" in msg
+    assert "2/2" in msg, f"summary should show pool cap progress; got: {msg!r}"
+    assert full_stubs.httpx.calls == [], (
+        f"pre-check should skip all HTTP; httpx was called: "
+        f"{full_stubs.httpx.calls!r}"
+    )
 
 
 async def test_run_fetch_does_not_double_include_when_curator_already_full(
@@ -327,6 +320,57 @@ async def test_run_fetch_does_not_double_include_when_curator_already_full(
     # The summary's `included` count reflects the new batch only — and is 0.
     msg = db.cfg_get("last_fetch_summary")
     assert "1 stored, 0 included" in msg
+
+
+async def test_run_fetch_wall_clock_timeout_records_summary(
+        tmp_db, full_stubs, monkeypatch):
+    """Outer wall-clock guard prevents a slow HN day from pinning the worker
+    indefinitely. Past incident: a 3-minute hang during the fetch led to a
+    manual systemd stop. With the guard, the pipeline aborts at the cap and
+    the banner explains what happened — re-clicking is safe because the
+    URL-level dedup is idempotent."""
+    # Tighten the wall-clock to keep the test sub-second.
+    monkeypatch.setattr(fetcher, "_RUN_FETCH_WALLCLOCK_SECONDS", 0.05)
+
+    async def _hangs():
+        # Sleep longer than the test timeout — the inner pipeline never
+        # gets past this point, simulating an HN/RSS endpoint that's stuck.
+        await asyncio.sleep(5.0)
+        return []
+
+    monkeypatch.setattr(fetcher, "fetch_all_candidates", _hangs)
+
+    await fetcher.run_fetch("2026-05-08")
+
+    msg = db.cfg_get("last_fetch_summary")
+    assert "timed out" in msg, f"expected timeout banner; got: {msg!r}"
+    assert db.cfg_get("last_fetch_summary_date") == "2026-05-08"
+
+
+async def test_run_fetch_wall_clock_timeout_does_not_partial_commit_summary(
+        tmp_db, full_stubs, monkeypatch):
+    """When the inner pipeline gets cancelled by the wall-clock guard, the
+    *outer* timeout summary must win — the inner half-state must not leak
+    a misleading 'X stored' banner to the operator."""
+    monkeypatch.setattr(fetcher, "_RUN_FETCH_WALLCLOCK_SECONDS", 0.05)
+
+    async def _hangs():
+        await asyncio.sleep(5.0)
+        return []
+
+    monkeypatch.setattr(fetcher, "fetch_all_candidates", _hangs)
+
+    # Pre-seed a stale summary from a hypothetical earlier successful fetch.
+    db.cfg_set("last_fetch_summary",
+               "Pulled 5 HN + 0 RSS → 5 stored, 5 included")
+    db.cfg_set("last_fetch_summary_date", "2026-05-07")
+
+    await fetcher.run_fetch("2026-05-08")
+
+    msg = db.cfg_get("last_fetch_summary")
+    assert "timed out" in msg
+    # Date must be the timed-out fetch's date, not the prior successful one.
+    assert db.cfg_get("last_fetch_summary_date") == "2026-05-08"
 
 
 async def test_run_fetch_appends_position_continues_across_multiple_runs(
