@@ -21,7 +21,7 @@
     {% if view == 'curator' %}
     <form action="/day/{{ date_str }}/fetch" method="post" style="display:inline">
       {{ csrf_input(request) }}
-      <button class="btn btn-outline">&#x2193; Fetch HN</button>
+      <button class="btn btn-outline">&#x2193; Pull all feeds</button>
     </form>
     <button class="btn btn-outline" onclick="toggleAddArticle()">+ Add Article</button>
     {% if articles %}
@@ -45,6 +45,16 @@
     {% endif %}
   </div>
 </div>
+
+{% if fetch_summary %}
+<div class="flash" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+  <span>&#x2193; {{ fetch_summary }}</span>
+  <form action="/day/{{ date_str }}/dismiss-fetch-summary" method="post" style="margin:0;">
+    {{ csrf_input(request) }}
+    <button type="submit" class="btn btn-ghost btn-sm" title="Dismiss">&#x2715;</button>
+  </form>
+</div>
+{% endif %}
 
 <!-- View mode toggle -->
 <div class="view-toggle">
@@ -347,14 +357,14 @@ function appendFields(form, fields) {
 <div class="empty-state">
   {% if fetching %}
   <div class="empty-icon">&#x27F3;</div>
-  <p>Fetching and scoring articles from Hacker News&hellip;</p>
+  <p>Pulling from Hacker News and active RSS feeds&hellip;</p>
   <p class="text-muted" style="font-size:0.85em">This takes about a minute while articles are rated for security relevance.</p>
   {% else %}
   <div class="empty-icon">&#x25CE;</div>
   <p>No articles yet for {{ date_str }}.</p>
   <form action="/day/{{ date_str }}/fetch" method="post">
     {{ csrf_input(request) }}
-    <button class="btn btn-primary">Fetch from Hacker News</button>
+    <button class="btn btn-primary">Pull all feeds</button>
   </form>
   {% endif %}
 </div>

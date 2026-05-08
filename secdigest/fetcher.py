@@ -183,6 +183,36 @@ def score_articles(articles: list[dict]) -> list[dict]:
     return articles
 
 
+def _format_fetch_summary(hn: int, rss: int, new_count: int,
+                          stored: int, included: int) -> str:
+    """Compose the human-facing one-liner shown in the day-curator banner.
+
+    Branches by *why* a fetch produced 0 stored articles, because the operator
+    can act on each cause differently:
+      • feeds returned nothing → maybe HN_MIN_SCORE is too high, or RSS feeds are dead
+      • dedup ate everything → normal on a re-fetch of an already-seen day
+      • scoring rejected everything → curation prompt may be too strict
+    """
+    if hn == 0 and rss == 0:
+        return "Pulled 0 HN + 0 RSS — feeds returned nothing"
+    if new_count == 0:
+        return f"Pulled {hn} HN + {rss} RSS → 0 new (all already seen)"
+    if stored == 0:
+        return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
+                f"but all below relevance threshold")
+    return f"Pulled {hn} HN + {rss} RSS → {stored} stored, {included} included"
+
+
+def _record_fetch_summary(date_str: str, hn: int, rss: int,
+                          new_count: int, stored: int, included: int) -> None:
+    """Persist the latest fetch outcome to config_kv. Read by the day-curator
+    route to render a banner — the date stamp lets the route show the banner
+    only on the page that was actually fetched, not on every day view."""
+    db.cfg_set("last_fetch_summary", _format_fetch_summary(
+        hn, rss, new_count, stored, included))
+    db.cfg_set("last_fetch_summary_date", date_str)
+
+
 async def run_fetch(date_str: str | None = None) -> dict:
     """Full pipeline: fetch HN + RSS → score → store. Returns the newsletter dict."""
     if date_str is None:
@@ -191,6 +221,8 @@ async def run_fetch(date_str: str | None = None) -> dict:
     newsletter = db.newsletter_get_or_create(date_str)
 
     if db.article_count(newsletter["id"]) > 0:
+        # Don't overwrite a prior fetch summary — the route surfaces "Articles
+        # already fetched" via ?msg= for this short-circuit case.
         print(f"[fetcher] {date_str} already has articles, skipping")
         return newsletter
 
@@ -199,6 +231,7 @@ async def run_fetch(date_str: str | None = None) -> dict:
 
     from secdigest import rss as rss_module
     rss_candidates = await asyncio.to_thread(rss_module.fetch_all_rss)
+    hn_count, rss_count = len(candidates), len(rss_candidates)
 
     historical_urls = db.article_all_urls()
     seen_urls: set[str] = set()
@@ -209,10 +242,12 @@ async def run_fetch(date_str: str | None = None) -> dict:
             seen_urls.add(url)
             new_stories.append(s)
 
-    print(f"[fetcher] {len(candidates)} HN + {len(rss_candidates)} RSS candidates, "
+    print(f"[fetcher] {hn_count} HN + {rss_count} RSS candidates, "
           f"{len(new_stories)} after dedup")
 
     if not new_stories:
+        _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
+                              new_count=0, stored=0, included=0)
         return newsletter
 
     print(f"[fetcher] scoring {len(new_stories)} stories...")
@@ -231,8 +266,8 @@ async def run_fetch(date_str: str | None = None) -> dict:
     # Reserve HN slots so RSS-heavy days don't crowd HN out of the pool. Walk `relevant`
     # in current rank order and skim the top HN until the reservation is met; everything
     # else competes for the remaining slots by pure relevance.
-    hn_count = sum(1 for s in relevant if s.get("source", "hn") == "hn")
-    hn_target = min(hn_pool_min, hn_count, max_articles)
+    relevant_hn = sum(1 for s in relevant if s.get("source", "hn") == "hn")
+    hn_target = min(hn_pool_min, relevant_hn, max_articles)
     reserved: list[dict] = []
     remainder: list[dict] = []
     for s in relevant:
@@ -260,7 +295,11 @@ async def run_fetch(date_str: str | None = None) -> dict:
             source_name=story.get("source_name"),
         )
 
+    included_count = min(len(final), max_curator)
     print(f"[fetcher] stored {len(final)} articles "
           f"({len(reserved)} HN reserved, {len(final) - len(reserved)} other), "
-          f"{min(len(final), max_curator)} included")
+          f"{included_count} included")
+    _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
+                          new_count=len(new_stories),
+                          stored=len(final), included=included_count)
     return db.newsletter_get(date_str)
