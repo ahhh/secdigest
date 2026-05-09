@@ -2,6 +2,7 @@
 import re
 import httpx
 from xml.etree import ElementTree as ET
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from secdigest.web.security import is_safe_external_url
 
@@ -45,7 +46,7 @@ def fetch_feed(url: str, max_articles: int = 5) -> list[dict]:
         if resp.status_code != 200:
             return []
         text = re.sub(r' xmlns(?::\w+)?="[^"]+"', '', resp.text, count=5)
-        root = ET.fromstring(text)
+        root = _safe_fromstring(text)
     except Exception as e:
         print(f"[rss] error fetching {url}: {e}")
         return []

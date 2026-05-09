@@ -72,9 +72,10 @@ _BUCKET_MAX_KEYS = 10_000             # absolute cap before a forced sweep
 
 
 def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    # Intentionally does NOT trust X-Forwarded-For: a client can set arbitrary
+    # values, so reading it here would let anyone bypass per-IP rate limits.
+    # Deployments behind a trusted reverse proxy should use a ProxyHeadersMiddleware
+    # that rewrites request.client before this code runs.
     return request.client.host if request.client else "unknown"
 
 

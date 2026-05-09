@@ -311,12 +311,12 @@ async def test_post_email_templates_header_can_clear(admin_client):
 
 
 async def test_email_templates_page_renders_current_global_header(admin_client):
+    from markupsafe import escape as _jinja_escape
     db.cfg_set("header_html", HEADER_SNIPPET)
     r = await admin_client.get("/email-templates")
     assert r.status_code == 200
-    # The current value should appear inside the textarea so admins see what
-    # they have right now without having to hunt for it
-    assert HEADER_SNIPPET in r.text
+    # Jinja2 autoescape uses markupsafe encoding (&#34; / &#39;) inside textarea
+    assert str(_jinja_escape(HEADER_SNIPPET)) in r.text
 
 
 # ── Set-template route persists the toggle ─────────────────────────────────
