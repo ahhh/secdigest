@@ -822,9 +822,9 @@ def newsletter_update(id: int, **kwargs):
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"newsletter_update: disallowed columns {bad}")
-    fields = ", ".join(f"{k}=?" for k in kwargs)
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
     with _lock:
-        _get_conn().execute(f"UPDATE newsletters SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().execute(f"UPDATE newsletters SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
         _get_conn().commit()
 
 
@@ -885,9 +885,9 @@ def article_update(id: int, **kwargs):
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"article_update: disallowed columns {bad}")
-    fields = ", ".join(f"{k}=?" for k in kwargs)
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
     with _lock:
-        _get_conn().execute(f"UPDATE articles SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().execute(f"UPDATE articles SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
         _get_conn().commit()
 
 
@@ -946,9 +946,9 @@ def article_set_pin(article_id: int, period: str, pinned: bool):
     """period is 'weekly' or 'monthly'."""
     if period not in ("weekly", "monthly"):
         raise ValueError(f"article_set_pin: bad period {period!r}")
-    col = f"pin_{period}"
+    col = f"pin_{period}"  # nosec B608 — period validated to "weekly"/"monthly" above
     with _lock:
-        _get_conn().execute(f"UPDATE articles SET {col}=? WHERE id=?", (1 if pinned else 0, article_id))
+        _get_conn().execute(f"UPDATE articles SET {col}=? WHERE id=?", (1 if pinned else 0, article_id))  # nosec B608
         _get_conn().commit()
 
 
@@ -1108,9 +1108,9 @@ def prompt_update(id: int, **kwargs):
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"prompt_update: disallowed columns {bad}")
-    fields = ", ".join(f"{k}=?" for k in kwargs)
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
     with _lock:
-        _get_conn().execute(f"UPDATE prompts SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().execute(f"UPDATE prompts SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
         _get_conn().commit()
 
 
@@ -1149,9 +1149,9 @@ def subscriber_update(id: int, **kwargs):
         raise ValueError(f"subscriber_update: disallowed columns {bad}")
     if "cadence" in kwargs and kwargs["cadence"] not in ("daily", "weekly", "monthly"):
         raise ValueError(f"subscriber_update: bad cadence {kwargs['cadence']!r}")
-    fields = ", ".join(f"{k}=?" for k in kwargs)
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
     with _lock:
-        _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().execute(f"UPDATE subscribers SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
         _get_conn().commit()
 
 
@@ -1308,12 +1308,12 @@ def voice_audio_upsert(newsletter_id: int, **fields):
         raise ValueError(f"voice_audio_upsert: disallowed columns {bad}")
     if not fields:
         return
-    cols = ", ".join(fields)
+    cols = ", ".join(fields)  # nosec B608 — keys pre-validated against allowlist
     placeholders = ", ".join("?" * len(fields))
     sets = ", ".join(f"{k}=excluded.{k}" for k in fields)
     with _lock:
         _get_conn().execute(
-            f"INSERT INTO voice_audio(newsletter_id, {cols}) "
+            f"INSERT INTO voice_audio(newsletter_id, {cols}) "  # nosec B608 — keys pre-validated against allowlist
             f"VALUES (?, {placeholders}) "
             f"ON CONFLICT(newsletter_id) DO UPDATE SET {sets}, "
             f"updated_at=CURRENT_TIMESTAMP",
@@ -1406,9 +1406,9 @@ def email_template_update(id: int, **kwargs):
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"email_template_update: disallowed columns {bad}")
-    fields = ", ".join(f"{k}=?" for k in kwargs)
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
     with _lock:
-        _get_conn().execute(f"UPDATE email_templates SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().execute(f"UPDATE email_templates SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
         _get_conn().commit()
 
 
@@ -1498,9 +1498,9 @@ def rss_feed_update(id: int, **kwargs):
     bad = set(kwargs) - allowed
     if bad:
         raise ValueError(f"rss_feed_update: disallowed columns {bad}")
-    fields = ", ".join(f"{k}=?" for k in kwargs)
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
     with _lock:
-        _get_conn().execute(f"UPDATE rss_feeds SET {fields} WHERE id=?", [*kwargs.values(), id])
+        _get_conn().execute(f"UPDATE rss_feeds SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
         _get_conn().commit()
 
 

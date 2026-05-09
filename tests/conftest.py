@@ -234,6 +234,7 @@ class _HttpxKnob:
 
     def route(self, pattern: str, *, status: int = 200,
               json_data: Any = None, text: str = ""):
+        self._routes = [(p, r) for p, r in self._routes if p != pattern]
         self._routes.append((pattern, {
             "status": status, "json_data": json_data,
             "text": text or (json.dumps(json_data) if json_data is not None else ""),
@@ -366,10 +367,12 @@ def reset_rate_limits():
     security._SUBSCRIBE_ATTEMPTS.clear()
     security._UNSUBSCRIBE_ATTEMPTS.clear()
     security._LOGIN_ATTEMPTS.clear()
+    security._FEEDBACK_ATTEMPTS.clear()
     yield
     security._SUBSCRIBE_ATTEMPTS.clear()
     security._UNSUBSCRIBE_ATTEMPTS.clear()
     security._LOGIN_ATTEMPTS.clear()
+    security._FEEDBACK_ATTEMPTS.clear()
 
 
 # ── HTTP clients ─────────────────────────────────────────────────────────────

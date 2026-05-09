@@ -60,8 +60,8 @@ async def subscribe(request: Request,
         }, status_code=429)
     subscribe_record(request)
 
-    email_clean = (email or "").strip().lower().replace("\r", "").replace("\n", "")
-    if not _EMAIL_RE.match(email_clean):
+    email_clean = (email or "").strip().lower().replace("\r", "").replace("\n", "").replace("\x00", "")
+    if len(email_clean) > 254 or not _EMAIL_RE.match(email_clean):
         return templates.TemplateResponse("landing.html", {
             "request": request,
             "message": "That doesn't look like a valid email address.",
