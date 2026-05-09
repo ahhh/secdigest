@@ -1,4 +1,13 @@
-"""Routes: email template management."""
+"""Routes: email template management.
+
+Backs the /email-templates page, where the operator can list, edit,
+fork, and delete the HTML templates used by the mailer. The six
+``is_builtin=1`` templates can be edited but not deleted — they're
+re-seeded on startup, so deletion would just be a confusing UX.
+
+The global header markup also lives on this page for convenience —
+it's rendered into every issue whose 'Include header' toggle is on.
+"""
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
@@ -34,6 +43,9 @@ async def save_global_header(request: Request, header_html: str = Form("")):
 
 @router.get("/email-templates/{template_id}/json")
 async def template_json(request: Request, template_id: int):
+    """Used by the in-page editor's "switch template" dropdown — fetches
+    the raw fields so the textareas can be repopulated without a full
+    page reload."""
     if not is_authed(request):
         return JSONResponse({}, status_code=401)
     tmpl = db.email_template_get(template_id)
@@ -71,7 +83,7 @@ async def save_template(
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     db.email_template_update(template_id, name=name, description=description,
                               subject=subject, html=html, article_html=article_html)
-    return RedirectResponse(f"/email-templates?msg=Saved", status_code=302)
+    return RedirectResponse("/email-templates?msg=Saved", status_code=302)
 
 
 @router.post("/email-templates/{template_id}/delete")

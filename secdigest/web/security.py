@@ -1,7 +1,17 @@
-"""Security helpers: SSRF guards, login rate limiting."""
+"""Security helpers: SSRF guards, login rate limiting.
+
+Two unrelated concerns happen to live together here because both are
+"shared HTTP-layer guards" called from many routes:
+
+- ``is_safe_external_url`` is the SSRF allow-list used before any
+  outbound HTTP request driven by user-supplied URLs (RSS feeds,
+  article body fetch). Without it, an attacker could point us at
+  ``http://169.254.169.254/`` (cloud metadata) or an internal service.
+- The rate-limit buckets cap per-IP login/subscribe/unsubscribe/feedback
+  attempts to limit brute force and abuse.
+"""
 import ipaddress
 import socket
-from collections import defaultdict
 from time import time
 from urllib.parse import urlparse
 
@@ -12,15 +22,22 @@ def is_safe_external_url(url: str) -> bool:
     """Return True only if url is http(s) and resolves to a non-private public IP."""
     if not url:
         return False
+    # Defensive parse: malformed URLs (NUL bytes, etc.) can throw.
     try:
         parsed = urlparse(url)
     except Exception:
         return False
+    # Scheme allow-list: blocks file://, gopher://, ftp://, etc., which
+    # can be used for SSRF / local file disclosure with some HTTP clients.
     if parsed.scheme not in ("http", "https"):
         return False
     host = parsed.hostname
     if not host:
         return False
+    # Two paths: literal IP in the URL (e.g., http://10.0.0.1/) vs. a
+    # hostname we have to resolve. We resolve to *all* addresses and
+    # require every one to be public — a multi-A-record host where one
+    # entry is private gets rejected.
     try:
         ip = ipaddress.ip_address(host)
         addrs = [ip]
@@ -29,7 +46,13 @@ def is_safe_external_url(url: str) -> bool:
             infos = socket.getaddrinfo(host, None)
             addrs = [ipaddress.ip_address(info[4][0]) for info in infos]
         except Exception:
+            # DNS failure: be safe and reject. The caller treats False
+            # as "skip this URL", which is the right action either way.
             return False
+    # Any of these flags = "not a routable public address". ``is_reserved``
+    # covers RFC-reserved blocks, ``is_multicast`` covers 224.0.0.0/4,
+    # ``is_unspecified`` is 0.0.0.0/::, link_local covers 169.254/16
+    # (cloud metadata!) and fe80::/10, and so on.
     for ip in addrs:
         if (ip.is_private or ip.is_loopback or ip.is_link_local
                 or ip.is_reserved or ip.is_multicast or ip.is_unspecified):

@@ -14,12 +14,9 @@ Covers:
 The ElevenLabs HTTP call is intercepted by the existing stub_httpx fixture.
 boto3 has no equivalent stub yet; we monkeypatch a tiny fake S3 client into
 voice._s3_client so tests don't need AWS credentials or network."""
-import io
-from typing import Any
-
 import pytest
 
-from secdigest import config, crypto, db, mailer, voice
+from secdigest import crypto, db, mailer, voice
 from tests.conftest import get_csrf
 
 
@@ -272,6 +269,7 @@ def test_generate_audio_bytes_passes_speed_in_voice_settings(
         def __init__(self, *a, **kw): pass
         def __enter__(self): return self
         def __exit__(self, *a): return False
+
         def post(self, url, json=None, headers=None):
             captured["json"] = json
             captured["headers"] = headers
@@ -370,7 +368,7 @@ async def test_voice_generate_kicks_off_when_master_enabled(
 
     tok = await get_csrf(admin_client, "/day/2026-05-04")
     r = await admin_client.post(
-        f"/day/2026-05-04/voice/generate",
+        "/day/2026-05-04/voice/generate",
         headers={"X-CSRF-Token": tok},
     )
     assert r.status_code == 202
@@ -593,6 +591,7 @@ def test_generate_pipeline_writes_ready_row(tmp_db, voice_creds, fake_s3, monkey
 def test_generate_pipeline_writes_failed_row_on_api_error(
         tmp_db, voice_creds, fake_s3, monkeypatch):
     n = _seed_daily()
+
     def boom(text):
         raise RuntimeError("ElevenLabs 401: api_key=sk_live_xyz invalid")
     monkeypatch.setattr(voice, "_generate_audio_bytes", boom)

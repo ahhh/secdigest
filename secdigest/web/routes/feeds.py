@@ -1,4 +1,9 @@
-"""Routes: RSS feed management."""
+"""Routes: RSS feed management.
+
+CRUD page for the RSS feed list shown at /feeds. All routes here are
+auth-required (so RSS configuration can't be edited by visitors) and
+CSRF-protected (so a malicious page can't add a feed via the operator's
+browser session)."""
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
@@ -7,6 +12,9 @@ from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
 from secdigest.web.csrf import verify_csrf
 
+# Apply ``verify_csrf`` to every route on this router. GET/HEAD/OPTIONS
+# are exempt inside the dependency itself, so the read-only feeds page
+# still loads fine without a token round-trip.
 router = APIRouter(dependencies=[Depends(verify_csrf)])
 
 
@@ -24,6 +32,9 @@ async def feeds_page(request: Request):
 
 @router.post("/feeds/hn-pool-min")
 async def set_hn_pool_min(request: Request, hn_pool_min: int = Form(...)):
+    """Update the HN-reservation floor from this page rather than the
+    main settings page — keeps the lever with the feed list it affects.
+    Bounds-checked to a sensible range so a typo doesn't break ranking."""
     if not is_authed(request):
         return RedirectResponse("/feeds", status_code=302)
     if hn_pool_min < 0 or hn_pool_min > 50:

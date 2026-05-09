@@ -1,4 +1,18 @@
-"""FastAPI application factory. Entry point for uvicorn."""
+"""FastAPI application factory. Entry point for uvicorn.
+
+This is the admin app (port 8080 in dev). The public app lives at
+``secdigest.public.app`` and runs separately. Together they share the
+SQLite DB but otherwise have isolated routers, sessions, and statics.
+
+Boot order matters here:
+1. Validate ``SECRET_KEY`` is set — running with the default would
+   trivially defeat session signing and at-rest encryption.
+2. ``db.init_db()`` — creates schema + runs migrations.
+3. ``ensure_default_password()`` — seeds 'secdigest' if no admin pw is set.
+4. Start the APScheduler so the daily fetch fires automatically.
+
+On shutdown, the scheduler is stopped so uvicorn can exit promptly.
+"""
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,7 +25,10 @@ from secdigest import config, db
 from secdigest.web import auth, templates
 from secdigest.web.auth import is_authed, verify_password, ensure_default_password
 from secdigest.web.csrf import verify_csrf
-from secdigest.web.routes import newsletter, prompts, subscribers, settings, email_templates_route, unsubscribe, feeds, digest, voice
+from secdigest.web.routes import (
+    newsletter, prompts, subscribers, settings, email_templates_route,
+    unsubscribe, feeds, digest, voice,
+)
 from secdigest.web.security import login_allowed, login_record_failure, login_clear
 import secdigest.scheduler as sched
 
@@ -20,6 +37,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Async context-managed startup/shutdown. Anything before ``yield``
+    runs once at boot; anything after runs at shutdown."""
+    # Hard-fail rather than booting with a known-bad key — operators have
+    # accidentally shipped this default before.
     if config.SECRET_KEY == "dev-secret-change-me":
         raise RuntimeError(
             "SECRET_KEY is set to the default value. Set the SECRET_KEY env var to a "
@@ -61,14 +82,23 @@ async def force_default_password_reset(request: Request, call_next):
 app.add_middleware(
     SessionMiddleware,
     secret_key=config.SECRET_KEY,
+    # 7-day session lifetime: the operator visits the admin most days, so a
+    # week balances "don't log out too aggressively" against "stale sessions
+    # don't linger forever".
     max_age=86400 * 7,
+    # ``strict`` blocks the session cookie from being sent on cross-site
+    # navigations — strongest CSRF defence at the cookie layer.
     same_site="strict",
     https_only=False,  # set to True in production behind TLS
 )
 
 
+# /static serves CSS/JS bundled with the admin templates.
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Mount each feature's router. Keeping them in separate files keeps any
+# single route file scrollable and tells you what to grep for when
+# tracking down a bug ("what file owns POST /day/<date>?").
 app.include_router(newsletter.router)
 app.include_router(prompts.router)
 app.include_router(subscribers.router)
@@ -89,6 +119,8 @@ async def login_page(request: Request, error: str = ""):
 
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
+    # Rate-limit FIRST so an attacker can't keep hammering the bcrypt
+    # verify (which is intentionally slow). Per-IP bucket; see security.py.
     if not login_allowed(request):
         return templates.TemplateResponse(
             "login.html",
@@ -97,9 +129,13 @@ async def login_submit(request: Request, password: str = Form(...)):
         )
     ph = db.cfg_get("password_hash")
     if ph and verify_password(password, ph):
+        # Successful login clears the IP's failure history so a successful
+        # operator login doesn't carry a quota debt from earlier typos.
         login_clear(request)
         request.session["authenticated"] = True
         return RedirectResponse("/", status_code=302)
+    # Failed login: count against the bucket. Generic "Wrong password"
+    # message — never confirm whether the password hash even exists, etc.
     login_record_failure(request)
     return templates.TemplateResponse(
         "login.html", {"request": request, "error": "Wrong password"}, status_code=401

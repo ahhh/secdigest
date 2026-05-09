@@ -1,4 +1,11 @@
-"""Routes: curation and summary prompt management."""
+"""Routes: curation and summary prompt management.
+
+Operators can author additional instructions that get prepended to the
+LLM calls (curation = scoring, summary = per-article writeup). This page
+is just a CRUD view over the ``prompts`` table — fetcher.py / summarizer.py
+read ``active=1`` rows on every run and concatenate them into the user
+message. Same auth + CSRF posture as the rest of the admin app.
+"""
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 

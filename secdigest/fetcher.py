@@ -1,4 +1,27 @@
-"""Fetch HN top stories and score them for security relevance via Claude."""
+"""Fetch HN top stories and score them for security relevance via Claude.
+
+This is the heart of the daily pipeline. The high-level flow:
+
+    HN top + HN new + active RSS feeds
+        ─►  merge & dedup against every URL ever stored
+        ─►  Claude Haiku scores each new story 0–10 for security relevance
+        ─►  reserve a configurable minimum number of HN slots so RSS heavy
+            days don't crowd HN out
+        ─►  insert top-N into the day's "pool" with the first M flagged
+            ``included=1`` for the curator's default selection
+
+A few design choices worth knowing about as you read:
+- **Re-runnable**: the dedup is global (against ``article_all_urls``), so
+  re-clicking "fetch" never produces duplicates. Mid-pipeline timeouts
+  also leave the DB in a sane state — anything inserted before the
+  cancellation is already committed.
+- **Wall-clock guarded**: we wrap the network-bound work in
+  ``asyncio.wait_for(...)`` so a slow upstream can't pin a worker for
+  minutes. Past incident notes above the limits explain the tuning.
+- **Dual-source uniform shape**: HN items and RSS items both come out as
+  dicts with the same keys, so ``score_articles`` doesn't care where they
+  came from.
+"""
 import asyncio
 import json
 import re
@@ -8,7 +31,10 @@ from datetime import date as dt_date
 
 from secdigest import config, db
 
+# HN's read-only Firebase API. Every endpoint returns JSON; we hit
+# ``topstories``, ``newstories``, and per-item ``item/<id>``.
 HN_BASE = "https://hacker-news.firebaseio.com/v0"
+# Haiku is cheap, fast, and accurate enough for a 0–10 ranking task.
 MODEL = "claude-haiku-4-5-20251001"
 
 # Network-tuning knobs. Lowered from earlier (200/100/Sem(20)/10s) after a
@@ -38,6 +64,9 @@ Respond with valid JSON only. No markdown fences."""
 
 
 async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict | list | None:
+    """Single HN API GET. Any failure (network, non-200, bad JSON) returns
+    None so callers can treat partial outages as "skipped item" rather than
+    aborting the whole feed."""
     try:
         r = await client.get(url, timeout=_HTTP_TIMEOUT_SECONDS)
         r.raise_for_status()
@@ -49,10 +78,15 @@ async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict | list | None
 async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
                       limit: int, min_score: int) -> list[dict]:
     """Fetch and filter stories from a single HN feed endpoint."""
+    # HN's list endpoints return just an array of item IDs; the actual
+    # story details live behind one HTTP call per id.
     ids = await _fetch_json(client, f"{HN_BASE}/{endpoint}.json")
     if not ids:
         return []
 
+    # Cap concurrency so we don't open `limit` sockets at once. With
+    # _HN_FETCH_CONCURRENCY=10 the full batch trickles through in a few
+    # seconds while staying polite to HN's API.
     sem = asyncio.Semaphore(_HN_FETCH_CONCURRENCY)
 
     async def fetch_one(sid):
@@ -61,6 +95,12 @@ async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
 
     items = await asyncio.gather(*[fetch_one(sid) for sid in ids[:limit]])
 
+    # Project HN's wire shape into the dict shape the rest of the
+    # pipeline uses (note: HN's "descendants" → our "comments").
+    # Filtering rules:
+    #   - drop deleted/dead and non-story items (Ask HN, Show HN are still type=story; jobs/polls are filtered out)
+    #   - drop anything below min_score so noise stays out of the LLM step
+    #   - synthesize an HN-comments URL when the story has no off-site URL
     return [
         {
             "id":       item["id"],
@@ -80,6 +120,10 @@ async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
 
 async def fetch_all_candidates() -> list[dict]:
     """Fetch top and new HN stories, merged and deduplicated by ID."""
+    # ``hn_min_score`` is operator-tunable: e.g., 100 for high-signal-only
+    # days, 25 for slow news days. The "new" feed uses a much lower
+    # threshold (5) since brand-new items haven't had time to accrete
+    # upvotes yet — we'd otherwise miss fresh CVE/0-day posts.
     min_score = int(db.cfg_get("hn_min_score") or 50)
     async with httpx.AsyncClient() as client:
         top, new = await asyncio.gather(
@@ -87,6 +131,8 @@ async def fetch_all_candidates() -> list[dict]:
             _fetch_feed(client, "newstories", _HN_NEW_LIMIT, 5),
         )
 
+    # An item can appear in both feeds; first-seen wins. We could use a
+    # set comprehension but a manual loop preserves order (top before new).
     seen: set[int] = set()
     combined: list[dict] = []
     for story in top + new:
@@ -97,6 +143,11 @@ async def fetch_all_candidates() -> list[dict]:
     return combined
 
 
+# Keyword tables for the offline fallback path. ``_KW_HIGH`` matches
+# words that strongly imply a security story (CVE, exploit, ransomware,
+# etc.) and gets a 7.0 score; ``_KW_MED`` is the broader infosec
+# vocabulary at 5.0. Anything that matches neither lands at 1.0 so it
+# can still be sorted/considered, just very low priority.
 _KW_HIGH = re.compile(
     r'\b(cve|exploit|exploited|exploiting|vulnerabilit\w+|breach|breached|malware|'
     r'ransomware|zero.day|0.day|backdoor|rce|remote.code.execution|xss|sql.injection|'
@@ -114,6 +165,8 @@ _KW_MED = re.compile(
 
 def _keyword_score(articles: list[dict]) -> None:
     """Keyword fallback — scores articles in-place that don't already have relevance_score."""
+    # Only fills holes — if the LLM scored *some* articles before erroring
+    # mid-batch, those are kept and we keyword-score the remainder.
     for a in articles:
         if "relevance_score" not in a:
             title = a["title"]
@@ -127,8 +180,13 @@ def _keyword_score(articles: list[dict]) -> None:
 
 def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]:
     """Call Claude to score a single article. Returns (score, reason)."""
+    # Per-call client construction so settings-page key rotations take
+    # effect on the next fetch without a process restart.
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or None)
 
+    # The model is asked to return JSON literally — system prompt forbids
+    # markdown fences. We still strip a stray ``` block below as a safety
+    # net because some prompts confuse newer models into wrapping output.
     user_prompt = (
         f"{custom_instructions}\n\n"
         f"Title: {article['title']}\n"
@@ -139,21 +197,29 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
     resp = client.messages.create(
         model=MODEL,
         max_tokens=256,
+        # Cache breakpoint: the system prompt is identical across calls,
+        # so this is the prompt-cache hot path that drives the 80% input
+        # token discount on bulk daily runs.
         system=[{"type": "text", "text": CURATION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_prompt}],
     )
 
+    # Strip an accidental ``` fence if the model returned one. The slice
+    # drops the opening fence line and (when present) the closing one.
     text = resp.content[0].text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
         end = -1 if lines[-1].strip() == "```" else len(lines)
         text = "\n".join(lines[1:end])
 
+    # If JSON parsing fails the exception bubbles up to score_articles and
+    # the article gets keyword-scored as part of the LLM-error fallback.
     result = json.loads(text)
     score = float(result.get("score", 0))
     reason = result.get("reason", "")
     snippet = f"[{score}/10] {article.get('title', '')[:70]} — {reason}"
 
+    # Audit row per call gives us cost/cache visibility on the curation page.
     usage = resp.usage
     db.audit_log(
         operation="curation", model=MODEL,
@@ -167,9 +233,15 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
 
 def score_articles(articles: list[dict]) -> list[dict]:
     """Score each article individually via Claude. Modifies articles in-place."""
+    # Operator-supplied curation tweaks (from the prompts table) get
+    # appended to each user message. Default fallback is a generic
+    # nudge to use the scoring guide in the system prompt.
     prompts = db.prompt_list(type_filter="curation")
     custom = "\n\n".join(p["content"] for p in prompts if p["active"]) or "Use the scoring guide."
 
+    # Single-error sentinel: any failed call flips us into "fallback mode"
+    # for unscored articles, and we surface the message in the settings
+    # page so the operator knows the LLM step degraded.
     llm_error: str | None = None
 
     for article in articles:
@@ -182,11 +254,17 @@ def score_articles(articles: list[dict]) -> list[dict]:
             print(f"[fetcher] curation error: {e}")
 
     if llm_error:
+        # Persist the most recent error so the curator UI can show it.
+        # ``_keyword_score`` only fills articles missing a score, so any
+        # successful LLM scores from before the failure are preserved.
         db.cfg_set("last_curation_error", llm_error)
         _keyword_score(articles)
     else:
+        # Clear stale error on a fully successful run.
         db.cfg_set("last_curation_error", "")
 
+    # Belt-and-suspenders: guarantee every article has the keys downstream
+    # code expects, even if both LLM and keyword paths somehow missed one.
     for a in articles:
         a.setdefault("relevance_score", 0.0)
         a.setdefault("relevance_reason", "")
@@ -295,16 +373,24 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     existing_count = len(existing_articles)
     existing_included = sum(1 for a in existing_articles if a.get("included", 1))
     existing_hn = sum(1 for a in existing_articles if a.get("source", "hn") == "hn")
+    # ``position`` is monotonic per newsletter; new inserts continue from
+    # max+1 so old-and-new ordering remains stable in the curator UI.
     base_position = max((a["position"] for a in existing_articles), default=-1) + 1
 
     print(f"[fetcher] fetching HN top + new for {date_str} "
           f"(existing pool: {existing_count})")
     candidates = await fetch_all_candidates()
 
+    # RSS uses a sync httpx client — running it on a worker thread keeps
+    # the event loop free and lets HN+RSS overlap. Local import dodges a
+    # circular (rss → web.security → some flask-ish stuff at import time).
     from secdigest import rss as rss_module
     rss_candidates = await asyncio.to_thread(rss_module.fetch_all_rss)
     hn_count, rss_count = len(candidates), len(rss_candidates)
 
+    # Global URL dedup against everything we've ever seen (across all days).
+    # ``seen_urls`` also collapses duplicates inside this batch (e.g., the
+    # same article appearing in both HN top and an RSS feed).
     historical_urls = db.article_all_urls()
     seen_urls: set[str] = set()
     new_stories: list[dict] = []
@@ -317,11 +403,17 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     print(f"[fetcher] {hn_count} HN + {rss_count} RSS candidates, "
           f"{len(new_stories)} after dedup")
 
+    # Early-return: nothing new today. We still record a fetch summary so
+    # the operator can tell the difference between "didn't run" and "ran,
+    # nothing new" on the day-curator banner.
     if not new_stories:
         _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
                               new_count=0, stored=0, included=0)
         return newsletter
 
+    # Caps that govern this fetch's contribution to the day:
+    #   max_curator: how many articles default to included=1 in total
+    #   hn_pool_min: floor of HN articles per day to reserve before RSS competes
     max_curator = int(db.cfg_get("max_curator_articles") or 10)
     hn_pool_min = int(db.cfg_get("hn_pool_min") or 10)
 
@@ -340,6 +432,11 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     print(f"[fetcher] scoring {len(new_stories)} stories...")
     scored = score_articles(new_stories)
 
+    # Filter to "actually relevant" (>=5/10) and rank by a blended signal:
+    #   relevance_score * sqrt(hn_score)
+    # The sqrt damps the influence of mega-viral HN posts so a 1000-point
+    # generic story doesn't outrank a 100-point but-actually-relevant CVE.
+    # RSS items with no hn score act as score=0, putting them after HN ties.
     relevant = sorted(
         [s for s in scored if s["relevance_score"] >= 5.0],
         key=lambda x: x["relevance_score"] * ((x.get("score") or 0) ** 0.5),
@@ -351,7 +448,11 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     # already has plenty of HN, no fresh slots get reserved this fetch.
     relevant_hn = sum(1 for s in relevant if s.get("source", "hn") == "hn")
     hn_shortfall = max(0, hn_pool_min - existing_hn)
+    # Take the min of: how many we still need, how many HN items are
+    # actually available in this batch, and how many open pool slots exist.
     hn_target = min(hn_shortfall, relevant_hn, remaining_pool)
+    # Walk relevant in rank order, sending the first ``hn_target`` HN
+    # items into the reserved bucket and everything else into remainder.
     reserved: list[dict] = []
     remainder: list[dict] = []
     for s in relevant:
@@ -359,15 +460,21 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
             reserved.append(s)
         else:
             remainder.append(s)
+    # Re-sort the remainder by raw relevance (the blended sort above gave
+    # a slight edge to high-HN items, but those have already been peeled
+    # off into ``reserved``; for the remainder, pure relevance is fairer).
     remainder.sort(key=lambda x: x["relevance_score"], reverse=True)
     final = reserved + remainder[: max(0, remaining_pool - len(reserved))]
 
+    # Insert into the DB in rank order. The first ``remaining_curator``
+    # picks default to included=1 so the curator opens to a sensible
+    # pre-built day; the rest sit in the pool awaiting manual promotion.
     for pos, story in enumerate(final):
-        # New articles default to included=1 only while curator slots remain;
-        # the rest land in the pool for manual promotion.
         included = 1 if pos < remaining_curator else 0
         db.article_insert(
             newsletter_id=newsletter["id"],
+            # ``hn_id`` is HN-only; RSS rows leave it NULL so we can tell
+            # them apart even after ``source`` migrations.
             hn_id=story.get("id") if story.get("source", "hn") == "hn" else None,
             title=story["title"],
             url=story.get("url", ""),
@@ -388,4 +495,6 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     _record_fetch_summary(date_str, hn=hn_count, rss=rss_count,
                           new_count=len(new_stories),
                           stored=len(final), included=included_count)
+    # Re-read the newsletter row so callers see any side-effects (e.g.,
+    # the ``last_fetched_at`` column updated by trigger).
     return db.newsletter_get(date_str)

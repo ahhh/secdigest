@@ -1,4 +1,26 @@
-"""Send newsletter emails via SMTP."""
+"""Send newsletter emails via SMTP.
+
+This module is the bridge between the in-DB content (newsletter rows,
+article rows, email templates) and the actual SMTP delivery. It handles:
+
+- **Composition** — slot articles into a chosen template, optionally
+  inject a TOC, voice player block, header block, and feedback widget.
+  Templates use simple ``{placeholder}`` tokens (``{title}``, ``{url}``,
+  ``{date}``, ``{articles}``, etc.) — no Jinja, just ``str.replace``.
+- **Sanitisation** — every value flowing into HTML attributes/text is
+  ``html.escape``'d, every SMTP header value runs through
+  ``_sanitize_header`` to strip CRLF (header-injection guard).
+- **Two output paths** — HTML (rich template) and plain text (fallback
+  for clients that strip HTML). They go out as a single multipart/alt
+  message.
+- **Two send modes** — ``send_test_email`` (one recipient, fake
+  unsubscribe token) and ``send_newsletter`` (all subscribers matching
+  the cadence, real per-subscriber tokens).
+
+Why no per-recipient connection? We open one SMTP session per *send
+operation* and loop subscribers inside the ``with server:`` block. This
+amortises TLS negotiation across a thousand-subscriber blast.
+"""
 import html
 import smtplib
 import ssl
@@ -116,14 +138,19 @@ def _voice_block_for_preview(newsletter_id: int) -> str:
 def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> tuple[bool, str]:
     """Internal: open a single SMTP connection and send one message. Used by all the
     higher-level send_* helpers below for one-off transactional mail."""
+    # All SMTP config lives in the DB so admins can edit it in the UI.
     cfg = db.cfg_all()
     smtp_host = cfg.get("smtp_host", "")
     if not smtp_host:
         return False, "SMTP not configured"
     smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
+    # Refuse to send if the placeholder From is still in place — the only
+    # thing worse than no email is one that goes out as noreply@example.com.
     if "example.com" in smtp_from:
         return False, "From address not configured"
 
+    # Final-mile sanitisation: every header value gets CRLF stripped so an
+    # attacker-controlled subject can't smuggle in a BCC.
     to_email = _sanitize_header(to_email).strip()
     if not to_email or "@" not in to_email:
         return False, "Invalid recipient"
@@ -135,6 +162,10 @@ def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> t
     smtp_pass = cfg.get("smtp_pass", "")
     tls_context = ssl.create_default_context()
     try:
+        # Two SMTP transport flavours, picked by port convention:
+        #   465 → implicit TLS from byte zero (SMTPS)
+        #   587 (or anything else) → cleartext + STARTTLS upgrade
+        # We never run plaintext-only — STARTTLS is unconditional.
         if port == 465:
             _server = smtplib.SMTP_SSL(smtp_host, port, context=tls_context)
         else:
@@ -143,9 +174,17 @@ def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> t
             server.ehlo()
             if port != 465:
                 server.starttls(context=tls_context)
+                # Re-EHLO is required after STARTTLS — the server may
+                # advertise different capabilities post-handshake (e.g.,
+                # AUTH only over TLS).
                 server.ehlo()
+            # smtp_pass is decrypted only at the moment we hand it to the
+            # server — it never lives in plaintext as a settings-page value.
             if smtp_user:
                 server.login(smtp_user, crypto.decrypt(smtp_pass))
+            # multipart/alternative tells the client "either body is
+            # acceptable; pick the richer one you can render". Order
+            # matters: text/plain first, text/html last, per RFC 2046.
             msg = MIMEMultipart("alternative")
             msg["Subject"] = subject
             msg["From"] = smtp_from
@@ -208,17 +247,34 @@ def _render_toc(included: list[dict], is_2col: bool = False) -> str:
 
 
 def _render_article(article_html: str, a: dict, n: int) -> str:
+    """Substitute one article's fields into the template's per-article snippet.
+
+    Two layers of safety here, because article titles/summaries originate
+    from feeds we don't control:
+
+    1. **URL allow-list** — only ``http://``/``https://`` URLs survive.
+       A javascript: URL in a feed item would be inert by the time it
+       hit the rendered email.
+    2. **HTML-escape every value** — even URL strings are escaped before
+       landing in attributes (think a URL with ``"`` in a query string
+       breaking out of the ``href="..."`` attribute).
+    """
     raw_url = a.get("url") or a.get("hn_url") or ""
     raw_hn_url = a.get("hn_url") or ""
     # Only allow http(s) URLs in href positions
     safe_url = raw_url if raw_url.startswith(("http://", "https://")) else ""
     safe_hn_url = raw_hn_url if raw_hn_url.startswith(("http://", "https://")) else ""
 
+    # ``quote=True`` escapes ``"`` as well, so values are safe inside
+    # double-quoted attribute contexts.
     title = html.escape(a.get("title", ""), quote=True)
     summary = html.escape(a.get("summary") or "No summary generated.", quote=True)
     safe_url_attr = html.escape(safe_url, quote=True)
     safe_hn_url_attr = html.escape(safe_hn_url, quote=True)
 
+    # Plain string substitution (not Jinja) — templates are operator-edited
+    # HTML with simple curly placeholders. Order doesn't matter since the
+    # values themselves never contain placeholder syntax.
     s = article_html
     s = s.replace("{number}", str(n))
     s = s.replace("{title}", title)
@@ -304,6 +360,10 @@ def render_email_html(newsletter: dict, articles: list[dict],
                       voice_block: str = "",
                       header_block: str = "") -> str:
     """Render the newsletter as HTML using the specified or configured template."""
+    # Template resolution priority (each branch falls through to the next):
+    #   1. explicit template_id (used by the live preview iframe)
+    #   2. the template_id stored on the newsletter row (operator's pick)
+    #   3. the system default template
     template = db.email_template_get(template_id) if template_id else None
     if not template:
         tid = db.newsletter_get_template_id(newsletter["id"])
@@ -313,8 +373,12 @@ def render_email_html(newsletter: dict, articles: list[dict],
     if not template:
         return "<html><body><p>No email template configured.</p></body></html>"
 
+    # Only included articles render. ``included`` defaults to 1 for legacy
+    # rows that pre-date the toggle.
     included = [a for a in articles if a.get("included", 1)]
     art_html = template["article_html"]
+    # Templates opt into the 2-column grid by using ``{articles_2col}`` in
+    # their body. A template can use either token (or, in theory, both).
     is_2col = "{articles_2col}" in template["html"]
 
     # Standard single-column list
@@ -513,6 +577,9 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
 
 def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     """Send the newsletter for date_str to active subscribers whose cadence matches kind."""
+    # Quick gates: bail with a useful message if the newsletter doesn't
+    # exist, has no included articles, or has no active subscribers on
+    # the matching cadence. All three are normal not-yet-ready states.
     newsletter, articles = _load_for_send(date_str, kind)
     if not newsletter:
         return False, f"No {kind} newsletter found for {date_str}"
@@ -557,6 +624,8 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     smtp_pass = cfg.get("smtp_pass", "")
     tls_context = ssl.create_default_context()
 
+    # Tally counters: ``sent`` increments per successful send,
+    # ``errors`` collects per-recipient failure messages.
     sent, errors = 0, []
     try:
         if port == 465:
@@ -564,6 +633,10 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
         else:
             _server = smtplib.SMTP(smtp_host, port)
 
+        # One TLS handshake + one auth, then the loop reuses the same
+        # SMTP session for every recipient. A connection failure here
+        # aborts the whole send (return False); per-recipient send_message
+        # failures are caught separately and recorded in ``errors``.
         with _server as server:
             server.ehlo()
             if port != 465:
@@ -572,6 +645,10 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
             if smtp_user:
                 server.login(smtp_user, crypto.decrypt(smtp_pass))
             for sub in subscribers:
+                # Per-recipient unsubscribe URL using the subscriber's
+                # ``unsubscribe_token`` (a single-use UUID minted at
+                # subscribe time). One-click unsubscribe is required by
+                # several mail providers' bulk-sender policies.
                 token = sub.get("unsubscribe_token", "")
                 unsub_url = f"{base_url}/unsubscribe/{token}" if token else ""
                 # The unsubscribe_token doubles as the feedback-recording
@@ -584,6 +661,9 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
                         f"{base_url}/feedback/{token}/{newsletter['id']}/signal",
                         f"{base_url}/feedback/{token}/{newsletter['id']}/noise",
                     )
+                # Re-render bodies per recipient because the unsub/feedback
+                # URLs differ. Voice and header blocks are precomputed
+                # outside the loop because they're identical across recipients.
                 html_body = render_email_html(newsletter, articles, unsubscribe_url=unsub_url,
                                               include_toc=include_toc, feedback_block=fb_block,
                                               voice_block=voice_block, header_block=header_block)
@@ -598,6 +678,8 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
                 msg["To"] = to_email
                 msg.attach(MIMEText(text_body, "plain"))
                 msg.attach(MIMEText(html_body, "html"))
+                # Inner try: a single bad recipient (rejected address,
+                # mailbox full, etc.) doesn't abort the whole batch.
                 try:
                     server.send_message(msg)
                     sent += 1
@@ -606,6 +688,10 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     except Exception as e:
         return False, f"SMTP connection failed: {e}"
 
+    # Mark the newsletter as sent so the curator UI can show "✓ sent" and
+    # disable the send button. Note: we mark sent even if some recipients
+    # errored — this keeps the row from being re-sent en masse to address
+    # a few stragglers; admins can resend individually if needed.
     db.newsletter_update(newsletter["id"], status="sent", sent_at=datetime.utcnow().isoformat())
     msg = f"Sent to {sent} subscribers"
     if errors:

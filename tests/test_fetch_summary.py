@@ -16,8 +16,6 @@ Test coverage:
 """
 import asyncio
 
-import pytest
-
 from secdigest import db, fetcher
 from secdigest.fetcher import _format_fetch_summary, _record_fetch_summary
 from tests.conftest import get_csrf

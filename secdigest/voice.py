@@ -17,15 +17,13 @@ The thread's only durable side-effects are DB writes and S3 puts; SQLite is
 configured with check_same_thread=False and writes go through the module-level
 _lock, so cross-thread access is safe.
 """
-import io
 import re
 import threading
 import uuid
-from datetime import datetime, timedelta
 
 import httpx
 
-from secdigest import config, crypto, db
+from secdigest import crypto, db
 
 
 _ELEVENLABS_API = "https://api.elevenlabs.io/v1"
@@ -87,14 +85,19 @@ def _trim_summary_for_voice(summary: str, max_chars: int = _MAX_SUMMARY_CHARS_VO
     s = " ".join(summary.split())  # collapse whitespace/newlines for narration
     if len(s) <= max_chars:
         return s
-    # First-sentence-fits-the-budget path
+    # First-sentence-fits-the-budget path: walk left-to-right inside the
+    # budget and remember the *latest* sentence boundary seen. The "next
+    # char is whitespace" check filters out things like "v3.2" that would
+    # otherwise be mistaken for sentence ends.
     end = -1
     for i, ch in enumerate(s[:max_chars]):
         if ch in ".!?" and i + 1 < len(s) and s[i + 1] in (" ", "\t"):
             end = i + 1
     if end > 0:
         return s[:end]
-    # No clean sentence break — truncate at a word boundary with an ellipsis
+    # No clean sentence break — truncate at a word boundary with an ellipsis.
+    # ``rfind`` walks back from the budget to the last space; if the whole
+    # window is a single token we just hard-cut.
     cut = s.rfind(" ", 0, max_chars)
     if cut <= 0:
         cut = max_chars
@@ -161,6 +164,11 @@ def _clamp_speed(raw: str | float | None) -> float:
 
 
 def _resolve_elevenlabs_config() -> dict:
+    """Pull settings out of the DB and shape them into the kwargs the rest
+    of the module needs. Decrypts the API key on the way out (it's stored
+    encrypted via ``crypto.py``). Raises ``VoiceConfigError`` early if any
+    required field is blank, so the caller can show a clear message rather
+    than letting ElevenLabs return a 401."""
     cfg = db.cfg_all()
     api_key_enc = cfg.get("elevenlabs_api_key", "")
     if not api_key_enc:
@@ -218,6 +226,9 @@ def _estimate_duration_seconds(audio_bytes: bytes) -> int:
 # ── S3 ──────────────────────────────────────────────────────────────────────
 
 def _resolve_s3_config() -> dict:
+    """Same idea as ``_resolve_elevenlabs_config`` but for S3. Normalises
+    the prefix to always end in ``/`` so we can join it with object keys
+    via plain string concatenation downstream."""
     cfg = db.cfg_all()
     bucket = cfg.get("aws_s3_bucket", "").strip()
     region = cfg.get("aws_s3_region", "").strip()
@@ -225,9 +236,14 @@ def _resolve_s3_config() -> dict:
         raise VoiceConfigError("AWS S3 bucket / region not set in Settings")
     access_key = cfg.get("aws_access_key_id", "").strip()
     secret_enc = cfg.get("aws_secret_access_key", "")
+    # Encrypted at rest in the DB; decrypt only when we actually need to
+    # build a client. The empty-string guard avoids decrypting garbage.
     secret = crypto.decrypt(secret_enc) if secret_enc else ""
     if not access_key or not secret:
         raise VoiceConfigError("AWS access key / secret not set in Settings")
+    # Normalise the prefix: strip a leading slash (S3 keys don't start
+    # with one), and ensure a trailing slash so callers can concatenate
+    # ``prefix + "newsletter-id/file.mp3"`` without thinking about it.
     prefix = cfg.get("aws_s3_prefix", "secdigest/audio/").strip().lstrip("/")
     if prefix and not prefix.endswith("/"):
         prefix += "/"

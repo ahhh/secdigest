@@ -19,10 +19,15 @@ STATIC_DIR = PUBLIC_DIR / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Idempotent init — both apps may call this on startup; ``init_db()``
+    # uses CREATE TABLE IF NOT EXISTS and migration guards, so it's safe.
     db.init_db()
     yield
 
 
+# Disable the auto-generated OpenAPI / Swagger / ReDoc endpoints. The
+# public app has no API meant for third parties; hiding them avoids
+# advertising internal route shapes to crawlers.
 app = FastAPI(
     lifespan=lifespan,
     title="SecDigest",

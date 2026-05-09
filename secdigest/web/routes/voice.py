@@ -14,7 +14,7 @@ minted at email-send time so a leaked status response can't replay a presigned
 URL past its window.
 """
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 
 from secdigest import db, periods, voice
 from secdigest.web.auth import is_authed

@@ -1,4 +1,9 @@
-"""Routes: subscriber list management."""
+"""Routes: subscriber list management.
+
+Admin-only counterpart to the public-site subscribe flow. Adding from
+here bypasses double-opt-in (the operator is trusted), unlike the public
+``/subscribe`` route which requires the email confirmation click.
+"""
 import re
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -9,6 +14,7 @@ from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
 from secdigest.web.csrf import verify_csrf
 
+# Same pragmatic email regex used on the public side.
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 router = APIRouter(dependencies=[Depends(verify_csrf)])

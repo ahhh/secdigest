@@ -170,10 +170,11 @@ async def test_resubscribe_already_confirmed_returns_identical_page(
     token = re.search(r"/confirm/([\w-]+)", stub_smtp[0]["body"]).group(1)
     await _get(app, f"/confirm/{token}")
 
-    # Snapshot the row + grab the new-signup page for comparison
+    # Snapshot the row + drive a new-signup POST so subsequent stub_smtp.clear()
+    # leaves us with a clean slate for the eve-resubscribe assertions below.
     sub_before = db.subscriber_get_by_email("eve@test.example")
-    new_signup_page = (await _post(app, "/subscribe",
-                       {"email": "fresh@test.example", "cadence": "daily", "website": ""})).text
+    await _post(app, "/subscribe",
+                {"email": "fresh@test.example", "cadence": "daily", "website": ""})
     stub_smtp.clear()
 
     r = await _post(app, "/subscribe",

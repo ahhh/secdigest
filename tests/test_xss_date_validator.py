@@ -14,8 +14,6 @@ import re
 
 import pytest
 
-from tests.conftest import get_csrf
-
 
 # ── Route-level validator ───────────────────────────────────────────────────
 

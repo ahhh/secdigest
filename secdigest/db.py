@@ -1,16 +1,53 @@
-"""All SQLite operations. Single module — import this everywhere you need data access."""
+"""All SQLite operations. Single module — import this everywhere you need data access.
+
+Architecture in one paragraph: we keep a single long-lived
+``sqlite3.Connection`` per process (``_conn``) shared across threads.
+SQLite handles this fine when ``check_same_thread=False`` is set, but
+we still funnel writes through a module-level ``threading.Lock`` to
+avoid two threads stepping on each other's BEGIN/COMMIT pairs. WAL mode
+is enabled so reads don't block writes and vice versa.
+
+What lives here:
+- **SCHEMA**: the canonical CREATE TABLE statements, applied
+  idempotently on startup via ``CREATE TABLE IF NOT EXISTS``.
+- **Migrations**: forward-only ``_migrate_*`` helpers each guarded by
+  "is the column/table/data already in the new shape?" checks. They
+  run unconditionally on every startup; idempotency is enforced by the
+  guards, not by tracking applied migrations.
+- **Seeders**: ``_seed_*`` populate config defaults, prompts, and email
+  templates on first run.
+- **CRUD**: thin wrappers around SQL grouped by table — newsletters,
+  articles, subscribers, prompts, etc. Each function returns plain
+  ``dict``/``list[dict]`` (we set ``row_factory = sqlite3.Row``).
+
+Why one big module? Every table's helpers want access to ``_get_conn``
+and ``_lock``, and the routes layer just wants to import a cohesive
+"db" namespace rather than a half-dozen sub-modules. At ~1500 lines
+it's still scrollable.
+"""
 import sqlite3
 import threading
 import uuid
 from secdigest import config
 
+# Process-wide singleton connection. ``None`` until ``init_db()`` opens it.
 _conn: sqlite3.Connection | None = None
+# Serialises writes across threads. Reads are safe to run concurrently
+# in WAL mode without holding this lock.
 _lock = threading.Lock()
 
+# Canonical schema applied on every startup. Each table uses
+# ``CREATE TABLE IF NOT EXISTS`` so this script is safe to run repeatedly;
+# changes to existing tables go through the ``_migrate_*`` helpers below
+# rather than being edited here (or old DBs would silently lose columns).
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
 
+-- One row per "issue". ``kind`` separates daily/weekly/monthly streams;
+-- ``period_start``/``period_end`` define the covered window (a single
+-- day for daily, Mon–Sun for weekly, etc.). The UNIQUE(kind, period_start)
+-- guarantees one issue per stream-period regardless of when we created it.
 CREATE TABLE IF NOT EXISTS newsletters (
     id           INTEGER PRIMARY KEY,
     kind         TEXT    NOT NULL DEFAULT 'daily',
@@ -23,6 +60,12 @@ CREATE TABLE IF NOT EXISTS newsletters (
     UNIQUE(kind, period_start)
 );
 
+-- Articles are owned by their *daily* newsletter (``newsletter_id``); they
+-- appear in weekly/monthly digests via the ``digest_articles`` join below.
+-- ``included`` is the curator toggle (1 = goes out in the email, 0 = pool only);
+-- ``position`` controls render order within an issue.
+-- ``pin_weekly``/``pin_monthly`` are sticky flags the curator sets to mark
+-- a daily article for inclusion in the upcoming weekly/monthly digest seed.
 CREATE TABLE IF NOT EXISTS articles (
     id              INTEGER PRIMARY KEY,
     newsletter_id   INTEGER NOT NULL REFERENCES newsletters(id),
@@ -44,6 +87,10 @@ CREATE TABLE IF NOT EXISTS articles (
     created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Many-to-many join: a single article (which lives in some daily issue)
+-- can appear in weekly and/or monthly digests, possibly with a different
+-- ordering/inclusion than it had in its source-day. ON DELETE CASCADE on
+-- both sides keeps the join clean if a daily or digest issue is deleted.
 CREATE TABLE IF NOT EXISTS digest_articles (
     digest_id  INTEGER NOT NULL REFERENCES newsletters(id) ON DELETE CASCADE,
     article_id INTEGER NOT NULL REFERENCES articles(id)    ON DELETE CASCADE,
@@ -70,6 +117,11 @@ CREATE TABLE IF NOT EXISTS prompts (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Subscribers go through a double-opt-in flow on the public site:
+-- a row is inserted with ``confirmed=0`` and a single-use ``confirm_token``,
+-- and is only flipped to ``confirmed=1`` when the link in the confirmation
+-- email is clicked. ``unsubscribe_token`` is a stable per-subscriber UUID
+-- used for unsubscribe links and feedback votes.
 CREATE TABLE IF NOT EXISTS subscribers (
     id                INTEGER PRIMARY KEY,
     email             TEXT    UNIQUE NOT NULL,
@@ -82,6 +134,9 @@ CREATE TABLE IF NOT EXISTS subscribers (
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- One row per Claude API call (curation scoring + summarisation). Used to
+-- show input/output/cache token counts on the audit page so operators can
+-- track API spend and verify prompt caching is hitting.
 CREATE TABLE IF NOT EXISTS llm_audit_log (
     id              INTEGER PRIMARY KEY,
     timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -111,6 +166,9 @@ CREATE TABLE IF NOT EXISTS email_templates (
     created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 👍/👎 votes from the buttons embedded in each issue. UNIQUE(subscriber_id,
+-- newsletter_id) means re-clicking just updates the vote rather than
+-- piling up rows; the route uses INSERT ... ON CONFLICT to flip.
 CREATE TABLE IF NOT EXISTS feedback (
     id            INTEGER PRIMARY KEY,
     subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
@@ -120,6 +178,10 @@ CREATE TABLE IF NOT EXISTS feedback (
     UNIQUE(subscriber_id, newsletter_id)
 );
 
+-- One row per newsletter that has (or had) a voice summary. The CHECK
+-- constraint enforces a small state machine: idle → queued → generating →
+-- ready (or → failed). The renderer in mailer.py only embeds an audio
+-- block when status='ready' and an s3_key exists.
 CREATE TABLE IF NOT EXISTS voice_audio (
     newsletter_id INTEGER PRIMARY KEY REFERENCES newsletters(id) ON DELETE CASCADE,
     status        TEXT    NOT NULL DEFAULT 'idle'
@@ -407,6 +469,11 @@ DEFAULT_EMAIL_TEMPLATES = [
 
 
 def _get_conn() -> sqlite3.Connection:
+    """Return the process-wide connection, opening it on first call.
+    ``check_same_thread=False`` lets us share it across the request handler
+    threads / scheduler thread / voice-gen thread; writes still serialise
+    through ``_lock``. ``row_factory = sqlite3.Row`` gives dict-like access
+    so callers can do ``row['title']`` instead of ``row[2]``."""
     global _conn
     if _conn is None:
         _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
@@ -415,13 +482,21 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db():
+    """One-shot startup hook. Applies the schema, then runs every seeder
+    and migration in order. Migrations are intentionally listed
+    chronologically (oldest first) — when adding a new one, append to
+    the bottom rather than reordering."""
     conn = _get_conn()
     with _lock:
         conn.executescript(SCHEMA)
         conn.commit()
+        # Seeders fill empty tables on first run; safe to call always
+        # because each guards against existing rows.
         _seed_config(conn)
         _seed_prompts(conn)
         _seed_email_templates(conn)
+        # Forward-only migrations. Each is internally idempotent —
+        # the order matters only for migrations that depend on prior ones.
         _migrate_subscriber_tokens(conn)
         _migrate_article_source(conn)
         _migrate_builtin_template_unsubscribe(conn)
@@ -441,12 +516,17 @@ def init_db():
 
 
 def _seed_config(conn):
+    """Insert the default config_kv rows. ``INSERT OR IGNORE`` makes this a
+    no-op for keys that already exist, so admin-edited values are never
+    clobbered on restart."""
     for key, val in config.DB_CONFIG_DEFAULTS.items():
         conn.execute("INSERT OR IGNORE INTO config_kv(key, value) VALUES (?, ?)", (key, val))
     conn.commit()
 
 
 def _seed_prompts(conn):
+    """Insert the built-in curation/summary prompts on a fresh DB. Skipped
+    once any prompts exist so admin-edited copies aren't overwritten."""
     if conn.execute("SELECT COUNT(*) FROM prompts").fetchone()[0] == 0:
         for p in DEFAULT_PROMPTS:
             conn.execute(
@@ -458,11 +538,16 @@ def _seed_prompts(conn):
 
 def _migrate_subscriber_tokens(conn):
     """Add unsubscribe_token column to subscribers and backfill any NULLs."""
+    # Bare ``except`` because SQLite raises ``OperationalError`` when the
+    # column already exists; that's the success path on already-migrated DBs.
     try:
         conn.execute("ALTER TABLE subscribers ADD COLUMN unsubscribe_token TEXT")
         conn.commit()
     except Exception:
         pass
+    # Backfill any rows that ended up with NULL tokens (either because they
+    # were inserted before the column existed, or via an admin path that
+    # forgot to set one). One UUID per subscriber, persisted forever.
     rows = conn.execute("SELECT id FROM subscribers WHERE unsubscribe_token IS NULL").fetchall()
     for row in rows:
         conn.execute("UPDATE subscribers SET unsubscribe_token=? WHERE id=?",
@@ -517,7 +602,17 @@ def _migrate_builtin_remove_hn_links(conn):
 
 
 def _migrate_newsletters_kind(conn):
-    """Rebuild legacy newsletters table to add kind/period columns and drop UNIQUE(date)."""
+    """Rebuild legacy newsletters table to add kind/period columns and drop UNIQUE(date).
+
+    SQLite can't ALTER a UNIQUE constraint, so the standard "table rebuild"
+    pattern is used: create a new table with the desired schema, copy rows
+    (mapping the old single ``date`` column into kind='daily' + period_start
+    /period_end of the same day), drop the original, and rename.
+
+    Foreign keys are turned off during the rebuild because the rename would
+    otherwise dangle FKs from articles/digest_articles momentarily; SQLite
+    re-validates them when foreign_keys is flipped back on.
+    """
     cols = {r[1] for r in conn.execute("PRAGMA table_info(newsletters)").fetchall()}
     if "kind" in cols:
         return
@@ -542,6 +637,9 @@ def _migrate_newsletters_kind(conn):
         """)
         conn.commit()
     finally:
+        # Always restore the FK pragma, even if the rebuild raised — leaving
+        # it OFF would silently break referential integrity for the rest of
+        # the process's lifetime.
         conn.execute("PRAGMA foreign_keys=ON")
 
 
@@ -758,11 +856,16 @@ def _seed_email_templates(conn):
 # ── Config ───────────────────────────────────────────────────────────────────
 
 def cfg_get(key: str) -> str:
+    """Read a single config value. Falls back to the in-code default
+    (``DB_CONFIG_DEFAULTS``) if the row is missing — keeps callers from
+    needing a separate ``or ""`` everywhere."""
     row = _get_conn().execute("SELECT value FROM config_kv WHERE key=?", (key,)).fetchone()
     return row[0] if row else config.DB_CONFIG_DEFAULTS.get(key, "")
 
 
 def cfg_set(key: str, value: str):
+    """Upsert a single config row. Uses ON CONFLICT to avoid the
+    select-then-insert race that an explicit existence check would have."""
     with _lock:
         _get_conn().execute(
             "INSERT INTO config_kv(key,value) VALUES(?,?) "
@@ -773,6 +876,8 @@ def cfg_set(key: str, value: str):
 
 
 def cfg_all() -> dict:
+    """Bulk fetch — used by views that need many keys at once (settings page,
+    mailer pre-flight). Cheaper than N round-trips to ``cfg_get``."""
     return {r[0]: r[1] for r in _get_conn().execute("SELECT key, value FROM config_kv").fetchall()}
 
 
@@ -786,17 +891,24 @@ def newsletter_get_or_create(date_str: str, kind: str = "daily",
     conn = _get_conn()
     period_start = period_start or date_str
     period_end = period_end or date_str
+    # Try to read first to avoid grabbing the write lock on the common
+    # "already exists" path.
     row = conn.execute(
         "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
     ).fetchone()
     if row:
         return dict(row)
+    # ``INSERT OR IGNORE`` covers the race where two requests both fall
+    # through the read above and try to create the same (kind, period)
+    # — the UNIQUE constraint makes the second insert a no-op.
     with _lock:
         conn.execute(
             "INSERT OR IGNORE INTO newsletters(kind, date, period_start, period_end) VALUES(?,?,?,?)",
             (kind, date_str, period_start, period_end),
         )
         conn.commit()
+    # Re-read after insert so we always return the canonical row, including
+    # auto-assigned id and DEFAULTs (status='draft', created_at, etc.).
     return dict(conn.execute(
         "SELECT * FROM newsletters WHERE kind=? AND period_start=?", (kind, period_start)
     ).fetchone())
@@ -816,6 +928,10 @@ def newsletter_get(date_str: str, kind: str = "daily") -> dict | None:
 
 
 def newsletter_update(id: int, **kwargs):
+    """Partial update of a newsletter row. Column names are validated
+    against an allow-list to keep the dynamic-SQL build below from
+    accepting arbitrary attacker-controlled identifiers — only the
+    *values* are bound as params; the *column names* are interpolated."""
     if not kwargs:
         return
     allowed = {"status", "sent_at"}
@@ -854,6 +970,11 @@ def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
                    relevance_reason: str, position: int,
                    included: int = 1, source: str = 'hn',
                    source_name: str | None = None) -> int:
+    """Insert a single article row. ``INSERT OR IGNORE`` makes this safe to
+    re-run after a partial fetch — the upstream dedup means duplicate URLs
+    won't even reach this function, but the OR IGNORE is cheap insurance."""
+    # Synthesise the HN comments URL only when we have an hn_id; RSS-only
+    # rows leave it NULL so we can tell the source apart from the URL field alone.
     hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else None
     with _lock:
         cur = _get_conn().execute(
@@ -871,6 +992,9 @@ def article_insert(newsletter_id: int, hn_id: int | None, title: str, url: str,
 
 
 def article_list(newsletter_id: int) -> list[dict]:
+    """Articles for one newsletter, ordered by curator position with
+    relevance as the tiebreaker. Position is operator-set via drag-reorder
+    in the UI; relevance is the LLM/keyword score from the fetcher."""
     rows = _get_conn().execute(
         "SELECT * FROM articles WHERE newsletter_id=? ORDER BY position ASC, relevance_score DESC",
         (newsletter_id,),
@@ -879,6 +1003,9 @@ def article_list(newsletter_id: int) -> list[dict]:
 
 
 def article_update(id: int, **kwargs):
+    """Partial update with column allow-list — same pattern as
+    ``newsletter_update``. Any unknown column name raises rather than
+    silently being ignored, so a typo in caller code surfaces immediately."""
     if not kwargs:
         return
     allowed = {"summary", "included", "title", "url", "relevance_score", "relevance_reason", "position"}
@@ -892,6 +1019,10 @@ def article_update(id: int, **kwargs):
 
 
 def article_reorder(newsletter_id: int, ordered_ids: list[int]):
+    """Apply a drag-reorder by writing a new position to each row.
+    The ``newsletter_id`` filter prevents an attacker from rewriting
+    positions on articles they don't own (the route doesn't check this
+    itself, so we enforce it in the SQL)."""
     with _lock:
         for pos, aid in enumerate(ordered_ids):
             _get_conn().execute(
@@ -936,6 +1067,8 @@ def article_all_hn_ids() -> set[int]:
 
 
 def article_all_urls() -> set[str]:
+    """Every URL we've ever stored, used by the fetcher's global dedup.
+    Returning a set lets callers do O(1) ``url in seen`` checks."""
     rows = _get_conn().execute(
         "SELECT url FROM articles WHERE url IS NOT NULL AND url != ''"
     ).fetchall()
@@ -944,6 +1077,9 @@ def article_all_urls() -> set[str]:
 
 def article_set_pin(article_id: int, period: str, pinned: bool):
     """period is 'weekly' or 'monthly'."""
+    # Strict allow-list before any string interpolation. Without this guard,
+    # ``period`` would be a SQL-injection vector (it's used to build a
+    # column name, which can't be parameterised in standard SQL).
     if period not in ("weekly", "monthly"):
         raise ValueError(f"article_set_pin: bad period {period!r}")
     col = f"pin_{period}"  # nosec B608 — period validated to "weekly"/"monthly" above
@@ -1048,6 +1184,8 @@ def digest_seed(digest_id: int, kind: str, period_start: str, period_end: str, t
     """
     if kind not in ("weekly", "monthly"):
         raise ValueError(f"digest_seed: bad kind {kind!r}")
+    # Pick the right pin column based on kind. Same allow-list reasoning
+    # as ``article_set_pin`` — column name can't be parameterised.
     pin_col = "pin_weekly" if kind == "weekly" else "pin_monthly"
 
     pool = articles_in_period(period_start, period_end)
@@ -1055,12 +1193,17 @@ def digest_seed(digest_id: int, kind: str, period_start: str, period_end: str, t
     # quality gate (curator already vetted these). Pinned articles bypass the gate.
     pinned = [a for a in pool if a.get(pin_col, 0)]
     pinned_ids = {a["id"] for a in pinned}
+    # Candidates = anything in the period that isn't already pinned and
+    # was included in its source day. Sorted by relevance so the highest-
+    # scoring stories fill the remaining slots.
     candidates = [a for a in pool
                   if a["id"] not in pinned_ids
                   and a.get("included", 1)]
     candidates.sort(key=lambda a: a.get("relevance_score", 0), reverse=True)
 
     # Pinned first (position by source date desc — matches the SQL ORDER), then top-N fillers
+    # ``max(0, ...)`` defends against a degenerate case where there are
+    # already more pinned articles than the requested cap.
     selected = list(pinned) + candidates[: max(0, top_n - len(pinned))]
 
     with _lock:
@@ -1071,6 +1214,8 @@ def digest_seed(digest_id: int, kind: str, period_start: str, period_end: str, t
         # the next visit skips re-seeding, and the user sees a partial digest
         # indefinitely.
         with conn:
+            # Wipe any previous seed first so re-seeding is idempotent and
+            # the curator can hit "refresh" to discard manual reordering.
             conn.execute("DELETE FROM digest_articles WHERE digest_id=?", (digest_id,))
             for pos, a in enumerate(selected):
                 conn.execute(
@@ -1201,6 +1346,9 @@ def subscriber_create_pending(email: str, cadence: str, confirm_token: str) -> d
         raise ValueError(f"subscriber_create_pending: bad cadence {cadence!r}")
     try:
         with _lock:
+            # Email is lowercased so subscribers don't get duplicated on
+            # case differences. ``unsubscribe_token`` is minted up-front so
+            # it's available immediately when the user later confirms.
             cur = _get_conn().execute(
                 """INSERT INTO subscribers
                    (email, name, active, cadence, confirmed, confirm_token, unsubscribe_token)
@@ -1212,6 +1360,9 @@ def subscriber_create_pending(email: str, cadence: str, confirm_token: str) -> d
             "SELECT * FROM subscribers WHERE id=?", (cur.lastrowid,)
         ).fetchone())
     except Exception:
+        # UNIQUE(email) violation lands here. Returning None keeps the
+        # public-site flow from leaking "this email is already subscribed"
+        # — important to avoid a free email-existence oracle.
         return None
 
 
@@ -1234,6 +1385,10 @@ def subscriber_confirm(token: str) -> dict | None:
     ).fetchone()
     if not row:
         return None
+    # Confirming flips three flags atomically: confirmed=1 (DOI satisfied),
+    # active=1 (will receive newsletters), and confirm_token=NULL (one-shot
+    # token spent — the same link can't be replayed to re-activate after
+    # an unsubscribe).
     with _lock:
         _get_conn().execute(
             "UPDATE subscribers SET confirmed=1, active=1, confirm_token=NULL WHERE id=?",
@@ -1308,6 +1463,9 @@ def voice_audio_upsert(newsletter_id: int, **fields):
         raise ValueError(f"voice_audio_upsert: disallowed columns {bad}")
     if not fields:
         return
+    # Build the SQL dynamically because callers pass arbitrary subsets of
+    # fields. Column names come from the allow-list above so this can't
+    # be SQL-injected; values are still bound as parameters.
     cols = ", ".join(fields)  # nosec B608 — keys pre-validated against allowlist
     placeholders = ", ".join("?" * len(fields))
     sets = ", ".join(f"{k}=excluded.{k}" for k in fields)
@@ -1315,6 +1473,8 @@ def voice_audio_upsert(newsletter_id: int, **fields):
         _get_conn().execute(
             f"INSERT INTO voice_audio(newsletter_id, {cols}) "  # nosec B608 — keys pre-validated against allowlist
             f"VALUES (?, {placeholders}) "
+            # Touch updated_at on every upsert so the polling UI can detect
+            # stalled "generating" states (no movement for >N minutes).
             f"ON CONFLICT(newsletter_id) DO UPDATE SET {sets}, "
             f"updated_at=CURRENT_TIMESTAMP",
             (newsletter_id, *fields.values()),
@@ -1349,6 +1509,10 @@ def newsletter_set_voice_enabled(newsletter_id: int, enabled: bool):
 
 def audit_log(operation: str, model: str, input_tokens: int, output_tokens: int,
               cached_tokens: int, article_id: int | None, result_snippet: str):
+    """Record one Claude API call. The snippet is truncated at 500 chars
+    so an unusually verbose summary doesn't bloat the audit table — the
+    full text is on the article row anyway, this is just for at-a-glance
+    inspection on the audit page."""
     with _lock:
         _get_conn().execute(
             """INSERT INTO llm_audit_log
@@ -1361,6 +1525,9 @@ def audit_log(operation: str, model: str, input_tokens: int, output_tokens: int,
 
 
 def audit_recent(limit: int = 50) -> list[dict]:
+    """Most recent audit rows for the audit page. Ordered by id rather
+    than timestamp so ties resolve deterministically (timestamps have
+    1-second resolution; bulk runs cluster on the same second)."""
     rows = _get_conn().execute(
         "SELECT * FROM llm_audit_log ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
@@ -1413,10 +1580,19 @@ def email_template_update(id: int, **kwargs):
 
 
 def email_template_delete(id: int):
+    """Delete a custom template. The ``is_builtin=0`` filter protects the
+    six bundled templates from accidental deletion via the API — they're
+    re-created on every startup anyway, but that's not a great UX surprise."""
     with _lock:
         _get_conn().execute("DELETE FROM email_templates WHERE id=? AND is_builtin=0", (id,))
         _get_conn().commit()
 
+
+# The next four pairs (template_id, subject, header, toc) all follow the
+# same pattern: per-newsletter overrides stored as ``<key>_<id>`` rows in
+# config_kv rather than dedicated columns on the newsletters table. Trade-off:
+# we get per-issue settings without growing the table; we lose typing and
+# referential integrity. For sparse, optional flags this is the right call.
 
 def newsletter_get_template_id(newsletter_id: int) -> int | None:
     row = _get_conn().execute(
@@ -1430,6 +1606,8 @@ def newsletter_set_template_id(newsletter_id: int, template_id: int):
 
 
 def newsletter_get_subject(newsletter_id: int) -> str | None:
+    """Subject override for a single issue. Returns None when the issue
+    uses the template's default subject (which is the common case)."""
     row = _get_conn().execute(
         "SELECT value FROM config_kv WHERE key=?", (f"subject_{newsletter_id}",)
     ).fetchone()

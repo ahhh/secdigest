@@ -142,7 +142,10 @@ async def day_view(request: Request, date_str: str):
         db.newsletter_get_subject(newsletter["id"]) if newsletter else None
     )
     if not active_subject and email_templates:
-        tmpl = next((t for t in email_templates if t["id"] == active_template_id), email_templates[0] if email_templates else None)
+        tmpl = next(
+            (t for t in email_templates if t["id"] == active_template_id),
+            email_templates[0] if email_templates else None,
+        )
         active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"SecDigest — {date_str}"
     active_toc = db.newsletter_get_toc(newsletter["id"]) if newsletter else False
     active_header = db.newsletter_get_header(newsletter["id"]) if newsletter else False
@@ -206,11 +209,13 @@ async def day_preview(request: Request, date_str: str, template_id: int = 0,
         "X-Frame-Options": "SAMEORIGIN",
     }
     newsletter = db.newsletter_get(date_str)
-    _placeholder = lambda msg: HTMLResponse(
-        f'<!DOCTYPE html><html><body style="margin:0;padding:40px;background:#0d1117;'
-        f'color:#6e7681;font-family:monospace;text-align:center;"><p>{msg}</p></body></html>',
-        headers=_preview_headers,
-    )
+
+    def _placeholder(msg):
+        return HTMLResponse(
+            f'<!DOCTYPE html><html><body style="margin:0;padding:40px;background:#0d1117;'
+            f'color:#6e7681;font-family:monospace;text-align:center;"><p>{msg}</p></body></html>',
+            headers=_preview_headers,
+        )
     if not newsletter:
         return _placeholder("No newsletter for this date.")
     articles = db.article_list(newsletter["id"])

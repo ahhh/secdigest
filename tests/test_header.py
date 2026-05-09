@@ -21,13 +21,15 @@ Covers:
 import sqlite3
 
 import pytest
-from httpx import AsyncClient, ASGITransport
 
 from secdigest import db, mailer
 from tests.conftest import get_csrf
 
 
-HEADER_SNIPPET = '<h2 style="color:#39ff14">Editor\'s intro</h2><p>This week we\'re focused on supply-chain attacks.</p>'
+HEADER_SNIPPET = (
+    '<h2 style="color:#39ff14">Editor\'s intro</h2>'
+    '<p>This week we\'re focused on supply-chain attacks.</p>'
+)
 
 
 def _seed():
@@ -279,7 +281,7 @@ async def test_day_preview_includes_global_header_when_query_set(admin_client):
     tid = db.email_template_default()["id"]
 
     r_off = await admin_client.get(f"/day/2026-05-04/preview?template_id={tid}&include_header=0")
-    r_on  = await admin_client.get(f"/day/2026-05-04/preview?template_id={tid}&include_header=1")
+    r_on = await admin_client.get(f"/day/2026-05-04/preview?template_id={tid}&include_header=1")
     assert r_off.status_code == 200 and r_on.status_code == 200
     assert "Editor's intro" not in r_off.text
     assert "Editor's intro" in r_on.text

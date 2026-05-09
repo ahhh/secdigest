@@ -17,9 +17,7 @@ If any of those links break, this test catches it. The whole thing runs offline.
 """
 import re
 
-import pytest
-
-from secdigest import db, fetcher, summarizer, mailer
+from secdigest import db, fetcher, summarizer
 from tests.conftest import get_csrf
 
 

@@ -207,7 +207,6 @@ async def test_double_subscribe_different_case_reuses_row(
     from secdigest.public.app import app
     await _post(app, "/subscribe",
                 {"email": "Bob@Test.Example", "cadence": "daily", "website": ""})
-    first_sub = db.subscriber_get_by_email("bob@test.example")
 
     # Simulate rate-limit reset between the two attempts
     from secdigest.web import security
@@ -257,7 +256,7 @@ async def test_pending_resubscribe_rotates_confirm_token(
     assert old_token != new_token, "pending re-subscribe must rotate confirm token"
 
     # Old token must no longer confirm the account
-    r = await _get(app, f"/confirm/{old_token}")
+    await _get(app, f"/confirm/{old_token}")
     sub = db.subscriber_get_by_email("henry@test.example")
     assert sub["confirmed"] == 0, "old token still confirmed the account after rotation"
 
@@ -362,7 +361,7 @@ async def test_feedback_sql_wildcard_token_does_not_match(
     """SQLite LIKE wildcards in the token path param must not match real rows.
     The lookup must use = (equality) not LIKE."""
     from secdigest.public.app import app
-    sub = _confirmed_subscriber()
+    _confirmed_subscriber()
     n = _seed_newsletter()
     db.cfg_set("feedback_enabled", "1")
 
@@ -401,13 +400,6 @@ async def test_feedback_inactive_subscriber_rejected(
     # The route currently accepts the token regardless of active state, so this
     # test documents the DESIRED behaviour as a regression guard. If the route
     # changes to filter by active=1, this test will catch any backslide.
-    count = db._get_conn().execute(
-        "SELECT COUNT(*) FROM feedback").fetchone()[0]
-    # Document current behavior; flag if a vote is unexpectedly stored
-    # from an inactive subscriber's token
-    if r.status_code == 200 and "ok" in r.text.lower():
-        pass  # route accepted it — not ideal but not crashing; count may be 1
-
     # Regardless: no 500 errors
     assert r.status_code != 500
 

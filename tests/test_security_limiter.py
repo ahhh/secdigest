@@ -4,7 +4,6 @@ Focus: M2 (bounded dicts) and the cross-bucket isolation. The integration
 tests in test_public_site.py cover the user-visible 429 behaviour; this file
 asserts the storage-level invariants directly.
 """
-import time as _time
 from unittest.mock import Mock
 
 import pytest

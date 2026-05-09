@@ -115,6 +115,7 @@ async def test_day_fetch_route_uses_spawn_bg(admin_client, monkeypatch):
         spawned.append(coro)
         # Close the coroutine so we don't get an "never awaited" warning.
         coro.close()
+
         # Return a dummy completed task so the route can still wire it.
         async def _noop():
             return None
@@ -149,6 +150,7 @@ async def test_day_summarize_route_uses_spawn_bg(admin_client, monkeypatch):
     def _recorder(coro):
         spawned.append(coro)
         coro.close()
+
         async def _noop():
             return None
         return asyncio.ensure_future(_noop())

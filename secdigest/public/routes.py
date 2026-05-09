@@ -1,10 +1,17 @@
-"""Public routes: landing page, subscribe, confirm, unsubscribe."""
+"""Public routes: landing page, subscribe, confirm, unsubscribe.
+
+Threat model differs from the admin app: every visitor is untrusted, no
+auth gates anything, and the goal is "don't leak whether an email is on
+the list" (no enumeration oracle) plus "don't get hammered by bots".
+That shapes most of the unusual choices below — converging branches on
+the same response page, generic error text, honeypot field, etc.
+"""
 import re
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from secdigest import config, db, mailer
@@ -19,6 +26,9 @@ templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
 router = APIRouter()
 
+# Pragmatic email check, not a full RFC 5322 implementation. Anything more
+# strict tends to reject valid addresses; the SMTP server will be the
+# real ground truth on whether an address is deliverable.
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _VALID_CADENCES = ("daily", "weekly", "monthly")
 
@@ -60,6 +70,10 @@ async def subscribe(request: Request,
         }, status_code=429)
     subscribe_record(request)
 
+    # Strip CRLF + NUL out of the email *before* it can land in any
+    # SMTP header or DB field. mailer.py will sanitize again at the
+    # SMTP boundary, but defending in depth here avoids ever storing a
+    # malformed value. 254 = SMTP's hard cap on email length.
     email_clean = (email or "").strip().lower().replace("\r", "").replace("\n", "").replace("\x00", "")
     if len(email_clean) > 254 or not _EMAIL_RE.match(email_clean):
         return templates.TemplateResponse("landing.html", {
@@ -109,6 +123,10 @@ async def subscribe(request: Request,
 
 @router.get("/confirm/{token}", response_class=HTMLResponse)
 async def confirm(request: Request, token: str):
+    """Land here when the user clicks the link in the confirmation email.
+    ``subscriber_confirm`` is the single-shot flip: it returns the row on
+    success, None on an unknown/used token. The template just toggles the
+    'ok' UI based on that — no error text leaks whether a token ever existed."""
     sub = db.subscriber_confirm(token)
     return templates.TemplateResponse("confirmed.html", {
         "request": request,

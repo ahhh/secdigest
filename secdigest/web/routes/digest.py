@@ -35,6 +35,16 @@ def _kind_label(kind: str) -> str:
 # ── Digest curator/builder view ───────────────────────────────────────────────
 
 async def _digest_view(request: Request, kind: str, date_str: str):
+    """Renders the curator/builder for one digest. The same handler powers
+    /week/<date> and /month/<date>; ``kind`` selects which period helper
+    to use.
+
+    Two responsibilities:
+    1. Lazy-create the digest row + seed it the first time someone visits
+       (pinned articles in the period + top-N relevance fillers).
+    2. Resolve every per-newsletter setting (template, subject override,
+       TOC/header/voice toggles) so the template can render the builder
+       in whatever state the operator left it last."""
     if not is_authed(request):
         return redirect_login()
     # date_str is reflected into JS via the digest.html <script> tag; backstop
@@ -44,7 +54,9 @@ async def _digest_view(request: Request, kind: str, date_str: str):
     _validate_date(date_str)
     period_start, period_end = _bounds(kind, date_str)
     digest = _ensure_digest(kind, period_start, period_end)
-    # Auto-seed on first visit when the digest is empty
+    # Auto-seed on first visit when the digest is empty. Re-seeding from
+    # the "Refresh selection" button goes through a different route below
+    # so manual reorders aren't blown away on every page load.
     if db.digest_article_count(digest["id"]) == 0:
         max_n = int(db.cfg_get("max_curator_articles") or 10)
         db.digest_seed(digest["id"], kind=kind,
@@ -52,6 +64,8 @@ async def _digest_view(request: Request, kind: str, date_str: str):
     articles = db.digest_article_list(digest["id"])
     view = request.query_params.get("view", "curator")
     email_templates = db.email_template_list()
+    # Active template fallback chain: per-newsletter override → first
+    # template in the list. Same pattern as the daily curator.
     active_template_id = (
         db.newsletter_get_template_id(digest["id"]) or
         (email_templates[0]["id"] if email_templates else None)
@@ -63,6 +77,7 @@ async def _digest_view(request: Request, kind: str, date_str: str):
         default_subject = f"SecDigest {_kind_label(kind)} — {{date}}"
         raw = tmpl["subject"] if tmpl["subject"] else default_subject
         # If the built-in subject still uses the daily form, swap in the digest form
+        # so a weekly issue doesn't go out subjected as "SecDigest — <monday>".
         if "Weekly" not in raw and "Monthly" not in raw and kind in ("weekly", "monthly"):
             raw = default_subject
         active_subject = raw.replace("{date}", period_start)
@@ -109,9 +124,12 @@ def _redirect(kind: str, date_str: str, view: str | None = None, msg: str | None
               status: str | None = None) -> RedirectResponse:
     base = "/week/" if kind == "weekly" else "/month/"
     qs = []
-    if view: qs.append(f"view={view}")
-    if msg: qs.append(f"msg={msg.replace(' ', '+')}")
-    if status: qs.append(f"status={status}")
+    if view:
+        qs.append(f"view={view}")
+    if msg:
+        qs.append(f"msg={msg.replace(' ', '+')}")
+    if status:
+        qs.append(f"status={status}")
     suffix = ("?" + "&".join(qs)) if qs else ""
     return RedirectResponse(f"{base}{date_str}{suffix}", status_code=302)
 

@@ -1,0 +1,34 @@
+[flake8]
+# Pragmatic style for this codebase.
+# - 120-char lines: matches the existing prose width in this repo and
+#   accommodates inline HTML/SQL constants in db.py / config.py.
+# - Ignore the continuation-indent family (E127/E128/E129/E131): pycodestyle
+#   and pyflakes disagree about the "right" hanging-indent style and these
+#   warnings rarely catch real bugs.
+# - Ignore E402 (module import not at top): a few files do deliberate
+#   late imports to break import cycles (rss → db, etc.).
+# - Ignore W503/W504 (binary operator line break): one of these always
+#   contradicts whatever Black-ish style you're using.
+max-line-length = 120
+extend-ignore =
+    E127,
+    E128,
+    E129,
+    E131,
+    E402,
+    W503,
+    W504
+exclude =
+    .git,
+    __pycache__,
+    data,
+    docs,
+    .venv,
+    venv
+# Per-file relaxations:
+# - db.py contains inline HTML email templates whose lines exceed even 120 in
+#   places; trying to split them would corrupt the template strings.
+# - config.py has long error-message strings (multi-line RuntimeError content).
+per-file-ignores =
+    secdigest/db.py:E501
+    secdigest/config.py:E501
