@@ -14,6 +14,8 @@ heavy discount on bulk runs (≈80%). See ``audit_log`` in db.py for how
 we track the cache_read counts.
 """
 import re
+from urllib.parse import urljoin
+
 import httpx
 import anthropic
 from secdigest import config, db
@@ -22,6 +24,12 @@ from secdigest.web.security import is_safe_external_url
 # Haiku is fast + cheap and sufficient for short summaries. Pinned to a
 # specific snapshot to keep summary style stable across releases.
 MODEL = "claude-haiku-4-5-20251001"
+
+# Cap on hops we'll walk through 30x responses before giving up. Five
+# covers the common publisher patterns (canonical-URL redirect, consent
+# bounce, country-TLD swap, scheme upgrade) without letting a redirect
+# loop run away.
+_MAX_REDIRECTS = 5
 
 # The system prompt does the heavy lifting on output shape. Constraining
 # format up front (2-3 sentences, no preamble) is what keeps the daily
@@ -60,18 +68,41 @@ def _fetch_article_text(url: str, max_chars: int = 1500) -> str:
     if not url or "news.ycombinator.com" in url or not is_safe_external_url(url):
         return ""
     try:
-        # No redirect-following: same SSRF reasoning as rss.py — a 302 to
-        # an internal URL would bypass is_safe_external_url. 8s timeout
-        # because we'll be doing this for every article in the daily run.
+        # Follow redirects manually so the SSRF guard runs on EVERY hop —
+        # bare follow_redirects=True would let a 302 → internal IP through.
+        # Past incident: blogspot posts produced "Unable to retrieve article
+        # content" because Blogger issues 30x for canonical/consent flows
+        # and the prior follow_redirects=False silently dropped the response.
         with httpx.Client(follow_redirects=False, timeout=8,
                           headers={"User-Agent": "Mozilla/5.0 (compatible; SecDigest/1.0)"}) as client:
-            resp = client.get(url)
+            current = url
+            resp = None
+            for _ in range(_MAX_REDIRECTS + 1):
+                resp = client.get(current)
+                if resp.status_code not in (301, 302, 303, 307, 308):
+                    break
+                loc = resp.headers.get("location", "")
+                if not loc:
+                    print(f"[summarizer] {url}: {resp.status_code} with no Location header")
+                    return ""
+                # Resolve relative redirects against the URL we just fetched,
+                # not the original — matters for `Location: /canonical/x`.
+                next_url = urljoin(current, loc)
+                if not is_safe_external_url(next_url):
+                    print(f"[summarizer] {url}: redirect to unsafe URL blocked ({next_url})")
+                    return ""
+                current = next_url
+            else:
+                print(f"[summarizer] {url}: too many redirects (>{_MAX_REDIRECTS})")
+                return ""
         if resp.status_code != 200:
+            print(f"[summarizer] {url}: HTTP {resp.status_code}")
             return ""
         # Defensive content-type check: the parser below assumes textual
         # input. PDFs, images, videos etc. are skipped.
         ct = resp.headers.get("content-type", "")
         if "text/html" not in ct and "text/plain" not in ct:
+            print(f"[summarizer] {url}: skipping content-type {ct!r}")
             return ""
         html = resp.text
 
@@ -92,9 +123,12 @@ def _fetch_article_text(url: str, max_chars: int = 1500) -> str:
         html = re.sub(r'<[^>]+>', ' ', html)
         html = re.sub(r'&[a-zA-Z]+;', ' ', html)
         return re.sub(r'\s+', ' ', html).strip()[:max_chars]
-    except Exception:
-        # Any network/parse failure: degrade gracefully to "no body
-        # text"; the model is still given the title and HN context.
+    except Exception as e:
+        # Any network/parse failure: degrade gracefully to "no body text" —
+        # the model still gets the title + HN context. Log so the operator
+        # can see WHY the body was missing instead of guessing from the
+        # "Unable to retrieve article content" summary text.
+        print(f"[summarizer] {url}: fetch error: {e}")
         return ""
 
 

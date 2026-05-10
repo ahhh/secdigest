@@ -13,6 +13,8 @@ We use:
   feed URLs are user-configured, we treat the response as untrusted XML.
 """
 import re
+from urllib.parse import urljoin
+
 import httpx
 from xml.etree import ElementTree as ET
 from defusedxml.ElementTree import fromstring as _safe_fromstring
@@ -22,6 +24,12 @@ from secdigest.web.security import is_safe_external_url
 # Atom feeds put their elements under this XML namespace. ElementTree
 # represents namespaced tags as ``{namespace}localname``.
 _ATOM_NS = 'http://www.w3.org/2005/Atom'
+
+# Cap on hops we'll walk through 30x responses before giving up. Five covers
+# the common publisher patterns (canonical-URL redirect, scheme upgrade,
+# host swap when a publication moves) without letting a misconfigured feed
+# pin the worker.
+_MAX_REDIRECTS = 5
 
 
 def _parse_rss(root: ET.Element, max_articles: int) -> list[dict]:
@@ -74,13 +82,35 @@ def fetch_feed(url: str, max_articles: int = 5) -> list[dict]:
     if not is_safe_external_url(url):
         return []
     try:
-        # ``follow_redirects=False`` is part of the SSRF posture — a 302
-        # to an internal URL would otherwise bypass the safety check above.
-        # Custom UA is polite (some feeds reject the default httpx UA).
+        # Follow redirects manually so the SSRF guard runs on EVERY hop —
+        # bare follow_redirects=True would let a 302 → internal IP through.
+        # Common cases: a publisher moves their feed to a new host, an http
+        # → https upgrade, a /feed → /feed/ canonicalisation. Custom UA is
+        # polite (some feeds reject the default httpx UA).
         with httpx.Client(follow_redirects=False, timeout=10,
                           headers={"User-Agent": "Mozilla/5.0 (compatible; SecDigest/1.0)"}) as client:
-            resp = client.get(url)
+            current = url
+            resp = None
+            for _ in range(_MAX_REDIRECTS + 1):
+                resp = client.get(current)
+                if resp.status_code not in (301, 302, 303, 307, 308):
+                    break
+                loc = resp.headers.get("location", "")
+                if not loc:
+                    print(f"[rss] {url}: {resp.status_code} with no Location header")
+                    return []
+                # Resolve relative redirects against the URL we just fetched,
+                # not the original — matters for `Location: /feed.xml`.
+                next_url = urljoin(current, loc)
+                if not is_safe_external_url(next_url):
+                    print(f"[rss] {url}: redirect to unsafe URL blocked ({next_url})")
+                    return []
+                current = next_url
+            else:
+                print(f"[rss] {url}: too many redirects (>{_MAX_REDIRECTS})")
+                return []
         if resp.status_code != 200:
+            print(f"[rss] {url}: HTTP {resp.status_code}")
             return []
         # Strip up to 5 xmlns declarations so namespace-heavy feeds parse
         # more predictably across RSS variants. The Atom branch below still
