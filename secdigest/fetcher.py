@@ -49,9 +49,9 @@ _HTTP_TIMEOUT_SECONDS = 5
 _RUN_FETCH_WALLCLOCK_SECONDS = 120
 
 CURATION_SYSTEM = """\
-You are a security news curator. Score Hacker News articles for relevance to security
-professionals. You will receive a batch of articles and must return a JSON array with
-a score (0-10) and brief reason for each.
+You are a security news curator. Score a Hacker News article for relevance to security
+professionals. You will receive one article and must return a single JSON object with
+a score (0-10) and a brief reason.
 
 Scoring guide:
 9-10: Direct security impact — active exploits, critical CVEs, major breaches, novel attack research
@@ -60,7 +60,7 @@ Scoring guide:
 3-4:  Tangentially related — general infosec, tech news with security implications
 0-2:  Not security-relevant — general tech, business, politics, entertainment
 
-Respond with valid JSON only. No markdown fences."""
+Respond with a single valid JSON object only — not a list, and no markdown fences."""
 
 
 async def _fetch_json(client: httpx.AsyncClient, url: str) -> dict | list | None:
@@ -215,6 +215,12 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
     # If JSON parsing fails the exception bubbles up to score_articles and
     # the article gets keyword-scored as part of the LLM-error fallback.
     result = json.loads(text)
+    # Some prompt drifts cause the model to wrap the object in a one-element
+    # array ([{"score": ..., "reason": ...}]). Unwrap so callers get a dict.
+    if isinstance(result, list):
+        if not result or not isinstance(result[0], dict):
+            raise ValueError(f"unexpected JSON shape from curator: {text[:200]}")
+        result = result[0]
     score = float(result.get("score", 0))
     reason = result.get("reason", "")
     snippet = f"[{score}/10] {article.get('title', '')[:70]} — {reason}"
@@ -432,13 +438,17 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     print(f"[fetcher] scoring {len(new_stories)} stories...")
     scored = score_articles(new_stories)
 
-    # Filter to "actually relevant" (>=5/10) and rank by a blended signal:
-    #   relevance_score * sqrt(hn_score)
+    # Filter to "actually relevant" (>= operator-tunable threshold) and rank
+    # by a blended signal: relevance_score * sqrt(hn_score).
     # The sqrt damps the influence of mega-viral HN posts so a 1000-point
     # generic story doesn't outrank a 100-point but-actually-relevant CVE.
     # RSS items with no hn score act as score=0, putting them after HN ties.
+    try:
+        threshold = float(db.cfg_get("relevance_threshold") or 5.0)
+    except (TypeError, ValueError):
+        threshold = 5.0
     relevant = sorted(
-        [s for s in scored if s["relevance_score"] >= 5.0],
+        [s for s in scored if s["relevance_score"] >= threshold],
         key=lambda x: x["relevance_score"] * ((x.get("score") or 0) ** 0.5),
         reverse=True,
     )

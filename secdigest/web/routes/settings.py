@@ -80,7 +80,8 @@ async def save_settings(request: Request):
     # Plain-text fields: copy through 1:1 if present in the form.
     # Anything not in the form is simply not updated, so partial saves work.
     for field in ("smtp_host", "smtp_port", "smtp_user", "smtp_from",
-                  "fetch_time", "hn_min_score", "max_articles", "max_curator_articles", "base_url",
+                  "fetch_time", "hn_min_score", "max_articles", "max_curator_articles",
+                  "relevance_threshold", "base_url",
                   "elevenlabs_voice_id", "elevenlabs_model", "elevenlabs_speed",
                   "aws_access_key_id", "aws_s3_bucket", "aws_s3_region", "aws_s3_prefix"):
         if field in form:
