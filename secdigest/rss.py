@@ -17,9 +17,21 @@ from urllib.parse import urljoin
 
 import httpx
 from xml.etree import ElementTree as ET
-from defusedxml.ElementTree import fromstring as _safe_fromstring
 
 from secdigest.web.security import is_safe_external_url
+
+# defusedxml is a hard requirement for safe parsing of operator-supplied feeds,
+# but if the production install is out of sync with requirements.txt we don't
+# want a missing dep to take the entire fetcher down (HN ingest doesn't touch
+# this module, but fetcher.py imports it). Degrade RSS to a no-op with a loud
+# log instead — and never fall back to the stdlib parser, which is vulnerable
+# to XXE / billion-laughs against attacker-controlled XML.
+try:
+    from defusedxml.ElementTree import fromstring as _safe_fromstring
+except ImportError:
+    _safe_fromstring = None
+    print("[rss] defusedxml not installed — RSS fetch disabled. "
+          "Install requirements.txt to re-enable.")
 
 # Atom feeds put their elements under this XML namespace. ElementTree
 # represents namespaced tags as ``{namespace}localname``.
@@ -77,6 +89,12 @@ def _parse_atom(root: ET.Element, max_articles: int) -> list[dict]:
 
 def fetch_feed(url: str, max_articles: int = 5) -> list[dict]:
     """Fetch and parse a single RSS/Atom feed. Returns [{title, url}]."""
+    # No safe parser available — bail before any HTTP. The import-time log
+    # above already told the operator why; staying silent here would just
+    # produce a stream of empty fetches with no obvious cause.
+    if _safe_fromstring is None:
+        print(f"[rss] {url}: skipped (defusedxml unavailable)")
+        return []
     # SSRF guard: feed URLs come from operator input, so we refuse to
     # fetch anything pointing at localhost / private IP space / file://.
     if not is_safe_external_url(url):

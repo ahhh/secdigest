@@ -230,3 +230,72 @@ def test_fetch_feed_redirect_then_4xx_returns_empty(fake_httpx, patch_safe):
         "https://old.example.com/feed.xml",
         "https://new.example.com/feed.xml",
     ]
+
+
+# ── Missing defusedxml degrades gracefully ───────────────────────────────────
+#
+# Production incident (2026-05-13): the server's site-packages drifted out of
+# sync with requirements.txt, so `import defusedxml` failed at rss.py load.
+# That took the entire fetcher down — HN included — because fetcher.py does
+# `from secdigest import rss as rss_module` and the import error propagated up
+# through asyncio.wait_for, crashing run_fetch.
+#
+# Fix: rss.py wraps the import in try/except and sets `_safe_fromstring=None`
+# on failure; fetch_feed bails before any HTTP. RSS is skipped, HN keeps
+# working. We do NOT fall back to the stdlib parser — that would defeat the
+# XXE/billion-laughs defence that was the whole reason defusedxml is here.
+
+def test_rss_module_imports_even_when_defusedxml_missing(monkeypatch):
+    """Simulate the production state: `defusedxml` not installed. The module
+    must still import cleanly — anything else propagates back up to fetcher.py
+    and takes HN ingest down with it."""
+    import builtins
+    import importlib
+    import sys
+
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "defusedxml" or name.startswith("defusedxml."):
+            raise ModuleNotFoundError("No module named 'defusedxml'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    # Drop the cached module so the reimport actually re-runs the top-level code.
+    monkeypatch.delitem(sys.modules, "secdigest.rss", raising=False)
+
+    reloaded = importlib.import_module("secdigest.rss")
+    assert reloaded._safe_fromstring is None
+    # Restore the normal module for any subsequent tests in this session.
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    importlib.reload(reloaded)
+
+
+def test_fetch_feed_no_op_when_defusedxml_missing(fake_httpx, patch_safe,
+                                                  monkeypatch):
+    """With no safe parser available, fetch_feed must return [] BEFORE making
+    any HTTP request. Fetching first and then parsing-with-fallback would
+    either crash on the missing parser or silently regress XXE defence."""
+    monkeypatch.setattr(rss, "_safe_fromstring", None)
+    patch_safe.add("blog.example.com")
+
+    assert rss.fetch_feed("https://blog.example.com/feed") == []
+    # The HTTP client was never called — bail happens before the request.
+    assert fake_httpx.requests == []
+
+
+def test_fetch_all_rss_returns_empty_when_defusedxml_missing(monkeypatch):
+    """fetch_all_rss should iterate configured feeds but produce zero
+    articles when the parser is unavailable. The fetcher pipeline treats this
+    as "0 RSS today" and continues with HN — which is the whole point of the
+    fix."""
+    monkeypatch.setattr(rss, "_safe_fromstring", None)
+    # Stub db.rss_feed_active so we don't need a real DB; the contract is
+    # just "iterable of {url, name, max_articles}".
+    fake_db = types.SimpleNamespace(rss_feed_active=lambda: [
+        {"url": "https://blog.example.com/feed",
+         "name": "example", "max_articles": 5},
+    ])
+    monkeypatch.setitem(__import__("sys").modules, "secdigest.db", fake_db)
+
+    assert rss.fetch_all_rss() == []
