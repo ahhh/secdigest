@@ -178,6 +178,38 @@ def _keyword_score(articles: list[dict]) -> None:
                 a["relevance_score"], a["relevance_reason"] = 1.0, "no security keywords"
 
 
+def _parse_curator_json(text: str, article: dict) -> dict:
+    """Extract the {score, reason} object from a curator response.
+
+    Tries a strict json.loads first; if that fails (e.g., the model wrapped
+    the JSON in prose like "Sure! Here's the score: {...}"), falls back to
+    the first balanced {...} substring. Raises ValueError with a useful
+    snippet so the operator-facing banner names the article and shows what
+    Claude actually returned, rather than a generic JSONDecodeError.
+    """
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        # Permissive fallback: grab the first {...} block. Cheap and good
+        # enough — the curator prompt only ever asks for a flat object.
+        m = re.search(r"\{[^{}]*\}", text)
+        if not m:
+            raise ValueError(
+                f"curator response was not JSON for "
+                f"{article.get('title', '')[:80]!r}: {text[:200]!r}"
+            )
+        result = json.loads(m.group(0))
+    # Some prompt drifts cause the model to wrap the object in a one-element
+    # array ([{"score": ..., "reason": ...}]). Unwrap so callers get a dict.
+    if isinstance(result, list):
+        if not result or not isinstance(result[0], dict):
+            raise ValueError(
+                f"unexpected JSON shape from curator: {text[:200]!r}"
+            )
+        result = result[0]
+    return result
+
+
 def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]:
     """Call Claude to score a single article. Returns (score, reason)."""
     # Per-call client construction so settings-page key rotations take
@@ -204,23 +236,34 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
         messages=[{"role": "user", "content": user_prompt}],
     )
 
+    # Past prod incident: a Haiku response came back with empty `text`,
+    # `json.loads("")` raised `Expecting value: line 1 column 1 (char 0)`,
+    # and the operator saw a scary "Article curation failed unexpectedly"
+    # banner even though keyword-fallback had already scored the batch.
+    # Two hardening steps:
+    #   1. Pick the first block that actually has `.text` (defends against
+    #      future SDK versions that may interleave thinking/tool blocks).
+    #   2. Treat empty text and trailing prose ("Sure! Here's the JSON: …")
+    #      as parseable: pull the first {...} chunk out before json.loads.
+    text = ""
+    for block in resp.content:
+        if getattr(block, "text", None):
+            text = block.text.strip()
+            break
+    if not text:
+        raise ValueError(
+            f"curator returned no text content for "
+            f"{article.get('title', '')[:80]!r}"
+        )
+
     # Strip an accidental ``` fence if the model returned one. The slice
     # drops the opening fence line and (when present) the closing one.
-    text = resp.content[0].text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
         end = -1 if lines[-1].strip() == "```" else len(lines)
-        text = "\n".join(lines[1:end])
+        text = "\n".join(lines[1:end]).strip()
 
-    # If JSON parsing fails the exception bubbles up to score_articles and
-    # the article gets keyword-scored as part of the LLM-error fallback.
-    result = json.loads(text)
-    # Some prompt drifts cause the model to wrap the object in a one-element
-    # array ([{"score": ..., "reason": ...}]). Unwrap so callers get a dict.
-    if isinstance(result, list):
-        if not result or not isinstance(result[0], dict):
-            raise ValueError(f"unexpected JSON shape from curator: {text[:200]}")
-        result = result[0]
+    result = _parse_curator_json(text, article)
     score = float(result.get("score", 0))
     reason = result.get("reason", "")
     snippet = f"[{score}/10] {article.get('title', '')[:70]} — {reason}"
