@@ -217,8 +217,9 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY or None)
 
     # The model is asked to return JSON literally — system prompt forbids
-    # markdown fences. We still strip a stray ``` block below as a safety
-    # net because some prompts confuse newer models into wrapping output.
+    # markdown fences. The assistant-turn prefill of `{` below makes a
+    # markdown wrap structurally impossible (the response has to continue
+    # inside the JSON object).
     user_prompt = (
         f"{custom_instructions}\n\n"
         f"Title: {article['title']}\n"
@@ -233,18 +234,28 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
         # so this is the prompt-cache hot path that drives the 80% input
         # token discount on bulk daily runs.
         system=[{"type": "text", "text": CURATION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_prompt}],
+        messages=[
+            {"role": "user", "content": user_prompt},
+            # Prod incident 2026-05-15: Haiku started producing a chatty
+            # preamble ("I'm ready to score Hacker News articles...") that
+            # filled the 256-token budget before reaching any JSON. Keyword
+            # fallback then bucketed most stories at 1.0 ("no security
+            # keywords") — below the 5.0 threshold — and a 60-candidate
+            # batch collapsed to 6 stored. Prefilling `{` forces the
+            # response to start inside the JSON object. We prepend the `{`
+            # back when parsing (resp.content excludes the prefill text).
+            {"role": "assistant", "content": "{"},
+        ],
     )
 
-    # Past prod incident: a Haiku response came back with empty `text`,
-    # `json.loads("")` raised `Expecting value: line 1 column 1 (char 0)`,
-    # and the operator saw a scary "Article curation failed unexpectedly"
-    # banner even though keyword-fallback had already scored the batch.
-    # Two hardening steps:
-    #   1. Pick the first block that actually has `.text` (defends against
-    #      future SDK versions that may interleave thinking/tool blocks).
-    #   2. Treat empty text and trailing prose ("Sure! Here's the JSON: …")
-    #      as parseable: pull the first {...} chunk out before json.loads.
+    # Past prod incidents this guards against:
+    #   - Empty text: json.loads("") used to raise "Expecting value: line 1
+    #     column 1 (char 0)" — the alarming banner from 2026-05-14.
+    #   - Future SDK shapes that interleave thinking/tool blocks before the
+    #     text block — scan for the first block with `.text`.
+    # The assistant prefill of `{` (above) means resp.content holds only the
+    # continuation; we prepend the `{` back so the result is a complete JSON
+    # object that json.loads can parse without the permissive fallback.
     text = ""
     for block in resp.content:
         if getattr(block, "text", None):
@@ -255,13 +266,8 @@ def _score_article(article: dict, custom_instructions: str) -> tuple[float, str]
             f"curator returned no text content for "
             f"{article.get('title', '')[:80]!r}"
         )
-
-    # Strip an accidental ``` fence if the model returned one. The slice
-    # drops the opening fence line and (when present) the closing one.
-    if text.startswith("```"):
-        lines = text.splitlines()
-        end = -1 if lines[-1].strip() == "```" else len(lines)
-        text = "\n".join(lines[1:end]).strip()
+    if not text.startswith("{"):
+        text = "{" + text
 
     result = _parse_curator_json(text, article)
     score = float(result.get("score", 0))
