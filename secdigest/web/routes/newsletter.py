@@ -3,7 +3,7 @@ import asyncio
 import re
 from datetime import date as dt_date
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 # Strict canonical ISO date — Python 3.11+'s date.fromisoformat() accepts
@@ -327,7 +327,6 @@ async def auto_select(request: Request, date_str: str):
 
 @router.post("/day/{date_str}/article/add")
 async def add_article(request: Request, date_str: str,
-                      background_tasks: BackgroundTasks,
                       url: str = Form(""),
                       title: str = Form(...),
                       summary: str = Form(""),
@@ -356,11 +355,15 @@ async def add_article(request: Request, date_str: str,
     if summary.strip():
         db.article_update(article_id, summary=summary.strip())
     elif auto_summarize == "1":
-        # BackgroundTasks (not asyncio.create_task) so Starlette holds a strong
-        # reference until the task completes. The previous create_task pattern
-        # left the task weakly-referenced, so Python 3.11+ could GC it before
-        # it ever ran — auto-generate looked checked but produced nothing.
-        background_tasks.add_task(summarizer.summarize_article, article_id)
+        # Use _spawn_bg, not FastAPI's BackgroundTasks. The
+        # force_default_password_reset middleware in web/app.py wraps responses
+        # via Starlette's BaseHTTPMiddleware, which silently drops
+        # response.background — so BackgroundTasks.add_task() looked queued
+        # but never fired. _spawn_bg schedules the work on the event loop
+        # immediately, independent of the response object, matching how
+        # day_fetch and day_summarize already work. summarize_article is
+        # sync (httpx + anthropic), so wrap in asyncio.to_thread.
+        _spawn_bg(asyncio.to_thread(summarizer.summarize_article, article_id))
     return RedirectResponse(f"/day/{date_str}", status_code=302)
 
 

@@ -166,3 +166,116 @@ async def test_day_summarize_route_uses_spawn_bg(admin_client, monkeypatch):
     assert len(spawned) == 1, (
         f"day_summarize must route through _spawn_bg; got {len(spawned)} calls"
     )
+
+
+async def test_add_article_auto_summarize_uses_spawn_bg(admin_client, monkeypatch):
+    """Auto-generate-summary checkbox must fire the summarizer.
+
+    Prod regression 2026-05-15: the route used FastAPI's BackgroundTasks,
+    but force_default_password_reset (web/app.py) is a BaseHTTPMiddleware-
+    style middleware, which silently drops `response.background`. The
+    summarizer was queued but never ran — operator checked the box, saw a
+    blank summary, and the article sat with no body text. Fix: route the
+    spawn through `_spawn_bg` like the other long-pipeline routes.
+
+    Same recorder shape as the day_fetch / day_summarize tests above —
+    monkeypatch `_spawn_bg` and assert it gets a call when auto_summarize=1
+    is posted with an empty summary."""
+    spawned: list = []
+
+    def _recorder(coro):
+        spawned.append(coro)
+        coro.close()
+
+        async def _noop():
+            return None
+        return asyncio.ensure_future(_noop())
+
+    monkeypatch.setattr(newsletter_routes, "_spawn_bg", _recorder)
+
+    tok = await get_csrf(admin_client, "/day/2026-05-08")
+    r = await admin_client.post(
+        "/day/2026-05-08/article/add",
+        data={
+            "csrf_token": tok,
+            "url": "https://example.invalid/post",
+            "title": "Test article",
+            "summary": "",          # blank → triggers the auto-generate branch
+            "auto_summarize": "1",  # checkbox is checked
+        },
+    )
+    assert r.status_code == 302
+    assert len(spawned) == 1, (
+        f"add_article auto-summarize must route through _spawn_bg; "
+        f"got {len(spawned)} calls — likely regressed to BackgroundTasks, "
+        f"which BaseHTTPMiddleware drops"
+    )
+
+
+async def test_add_article_no_summarize_when_checkbox_off(admin_client, monkeypatch):
+    """Inverse contract: when the checkbox is OFF (auto_summarize default
+    "0"), no background work should be scheduled. Pairs with the test
+    above to lock in the exact firing condition — neither over- nor
+    under-trigger."""
+    spawned: list = []
+
+    def _recorder(coro):
+        spawned.append(coro)
+        coro.close()
+
+        async def _noop():
+            return None
+        return asyncio.ensure_future(_noop())
+
+    monkeypatch.setattr(newsletter_routes, "_spawn_bg", _recorder)
+
+    tok = await get_csrf(admin_client, "/day/2026-05-08")
+    r = await admin_client.post(
+        "/day/2026-05-08/article/add",
+        data={
+            "csrf_token": tok,
+            "url": "https://example.invalid/post",
+            "title": "Test article",
+            "summary": "",
+            # No auto_summarize field — mimics an unchecked checkbox
+        },
+    )
+    assert r.status_code == 302
+    assert spawned == [], (
+        "add_article must NOT spawn the summarizer when the auto-summarize "
+        "checkbox is unchecked"
+    )
+
+
+async def test_add_article_no_summarize_when_summary_provided(admin_client, monkeypatch):
+    """If the operator types a summary by hand, don't auto-generate over
+    the top of it — even with the checkbox checked. The route already
+    short-circuits via the `if summary.strip()` branch; this test pins
+    that contract so a future refactor doesn't accidentally fire both."""
+    spawned: list = []
+
+    def _recorder(coro):
+        spawned.append(coro)
+        coro.close()
+
+        async def _noop():
+            return None
+        return asyncio.ensure_future(_noop())
+
+    monkeypatch.setattr(newsletter_routes, "_spawn_bg", _recorder)
+
+    tok = await get_csrf(admin_client, "/day/2026-05-08")
+    r = await admin_client.post(
+        "/day/2026-05-08/article/add",
+        data={
+            "csrf_token": tok,
+            "url": "https://example.invalid/post",
+            "title": "Test article",
+            "summary": "Operator-written summary.",
+            "auto_summarize": "1",
+        },
+    )
+    assert r.status_code == 302
+    assert spawned == [], (
+        "operator-supplied summary must win over auto_summarize=1"
+    )
