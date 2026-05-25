@@ -170,77 +170,86 @@ function reloadPreview() {
 </div>
 {% else %}
 
-<form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/reorder" method="post" id="reorder-form">
+<!-- Reorder form is kept outside the article list so the toggle/remove forms
+     inside each card are not nested inside it (nested forms are invalid HTML
+     and cause browsers to ignore the inner form tags, routing all button clicks
+     to the outer form instead). SortableJS updates these hidden inputs on drag
+     end and submits this form programmatically. -->
+<form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/reorder" method="post" id="reorder-form" style="display:none">
   {{ csrf_input(request) }}
-  <div id="article-list" class="article-list">
-    {% for a in articles %}
-    <input type="hidden" name="order" value="{{ a.id }}" class="order-input" data-id="{{ a.id }}">
-    <div class="article-card {% if not a.included %}article-excluded{% endif %}" data-id="{{ a.id }}">
-      <div class="article-drag-handle">&#x28BF;</div>
-      <div class="article-body">
-        <div class="article-meta">
-          <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
-          <span class="text-muted mono" style="font-size:.85em;">from {{ a.source_date }}</span>
-          {% if kind == 'weekly' and a.pin_weekly %}
-          <span class="badge badge-blue" style="font-size:.7em;">pinned</span>
-          {% elif kind == 'monthly' and a.pin_monthly %}
-          <span class="badge badge-blue" style="font-size:.7em;">pinned</span>
-          {% endif %}
-        </div>
-
-        {% if a.url or a.hn_url %}
-        <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">{{ a.title }}</a>
-        {% else %}
-        <span class="article-title" style="cursor:default;">{{ a.title }}</span>
-        {% endif %}
-
-        <div class="summary-section">
-          {% if a.summary %}
-          <p class="summary-text">{{ a.summary }}</p>
-          {% else %}
-          <p class="summary-placeholder">No summary on the source article.</p>
-          {% endif %}
-        </div>
-
-        <div class="article-actions">
-          <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/article/{{ a.id }}/toggle"
-                method="post" style="display:inline">
-            {{ csrf_input(request) }}
-            <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
-              {% if a.included %}Exclude{% else %}Include{% endif %}
-            </button>
-          </form>
-          <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/article/{{ a.id }}/remove"
-                method="post" style="display:inline"
-                onsubmit="return confirm('Remove this article from the digest? Pin it on its day page to keep it.')">
-            {{ csrf_input(request) }}
-            <button class="btn btn-sm btn-ghost btn-danger">&#x2716; Remove</button>
-          </form>
-          <a href="/day/{{ a.source_date }}" class="btn btn-sm btn-ghost">&#x2192; source day</a>
-        </div>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
+  {% for a in articles %}
+  <input type="hidden" name="order" value="{{ a.id }}" class="order-input" data-id="{{ a.id }}">
+  {% endfor %}
 </form>
 
+<div id="article-list" class="article-list">
+  {% for a in articles %}
+  <div class="article-card {% if not a.included %}article-excluded{% endif %}" data-id="{{ a.id }}">
+    <div class="article-drag-handle">&#x28BF;</div>
+    <div class="article-body">
+      <div class="article-meta">
+        <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
+        <span class="text-muted mono" style="font-size:.85em;">from {{ a.source_date }}</span>
+        {% if kind == 'weekly' and a.pin_weekly %}
+        <span class="badge badge-blue" style="font-size:.7em;">pinned</span>
+        {% elif kind == 'monthly' and a.pin_monthly %}
+        <span class="badge badge-blue" style="font-size:.7em;">pinned</span>
+        {% endif %}
+      </div>
+
+      {% if a.url or a.hn_url %}
+      <a href="{{ a.url or a.hn_url }}" target="_blank" class="article-title">{{ a.title }}</a>
+      {% else %}
+      <span class="article-title" style="cursor:default;">{{ a.title }}</span>
+      {% endif %}
+
+      <div class="summary-section">
+        {% if a.summary %}
+        <p class="summary-text">{{ a.summary }}</p>
+        {% else %}
+        <p class="summary-placeholder">No summary on the source article.</p>
+        {% endif %}
+      </div>
+
+      <div class="article-actions">
+        <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/article/{{ a.id }}/toggle"
+              method="post" style="display:inline">
+          {{ csrf_input(request) }}
+          <button class="btn btn-sm {% if a.included %}btn-ghost{% else %}btn-outline{% endif %}">
+            {% if a.included %}Exclude{% else %}Include{% endif %}
+          </button>
+        </form>
+        <form action="/{{ 'week' if kind == 'weekly' else 'month' }}/{{ date_str }}/article/{{ a.id }}/remove"
+              method="post" style="display:inline"
+              onsubmit="return confirm('Remove this article from the digest? Pin it on its day page to keep it.')">
+          {{ csrf_input(request) }}
+          <button class="btn btn-sm btn-ghost btn-danger">&#x2716; Remove</button>
+        </form>
+        <a href="/day/{{ a.source_date }}" class="btn btn-sm btn-ghost">&#x2192; source day</a>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
 <script>
-(function () {
+// DOMContentLoaded ensures SortableJS (loaded with defer in base.html) has
+// executed before we try to reference the Sortable global.
+document.addEventListener('DOMContentLoaded', function () {
   const list = document.getElementById('article-list');
   if (!list || typeof Sortable === 'undefined') return;
   Sortable.create(list, {
     handle: '.article-drag-handle',
     animation: 120,
     onEnd: () => {
-      // Sort the hidden order inputs to match DOM order, then submit
       const cards = list.querySelectorAll('.article-card');
       const ids = Array.from(cards).map(c => c.dataset.id);
-      const inputs = list.querySelectorAll('.order-input');
+      const inputs = document.querySelectorAll('#reorder-form .order-input');
       ids.forEach((id, i) => { inputs[i].value = id; });
       document.getElementById('reorder-form').submit();
     }
   });
-})();
+});
 </script>
 
 {% endif %}
