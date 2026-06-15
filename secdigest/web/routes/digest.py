@@ -87,8 +87,7 @@ async def _digest_view(request: Request, kind: str, date_str: str):
     voice_summary_enabled = db.cfg_get("voice_summary_enabled") == "1"
     voice_status = db.voice_audio_get(digest["id"])
 
-    return templates.TemplateResponse("digest.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "digest.html", {
         "kind": kind,
         "kind_label": _kind_label(kind),
         "date_str": date_str,

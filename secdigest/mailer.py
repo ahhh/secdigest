@@ -24,7 +24,7 @@ amortises TLS negotiation across a thousand-subscriber blast.
 import html
 import smtplib
 import ssl
-from datetime import datetime
+from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -199,6 +199,11 @@ def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> t
 
 def send_confirmation_email(to_email: str, confirm_url: str) -> tuple[bool, str]:
     """Send a double-opt-in confirmation email with a single confirm link."""
+    # A confirm link is worthless if base_url/PUBLIC_BASE_URL is still the docs
+    # placeholder — mirror the smtp_from guard rather than mail out a dead
+    # example.com URL the subscriber can never click through.
+    if "example.com" in confirm_url:
+        return False, "Public base URL is not configured (still using example.com)"
     safe_url = html.escape(confirm_url, quote=True)
     safe_url_text = confirm_url  # plain-text version intentionally unescaped
     html_body = (
@@ -522,6 +527,8 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
     smtp_from = _sanitize_header(smtp_from)
 
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
+    if "example.com" in base_url:
+        return False, "Public base URL is not configured (still using example.com)"
     include_toc = db.newsletter_get_toc(newsletter["id"])
     unsub_url = f"{base_url}/unsubscribe/test-preview"
 
@@ -609,6 +616,8 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     subject = _sanitize_header(subject)
     smtp_from = _sanitize_header(smtp_from)
     base_url = cfg.get("base_url", "http://localhost:8000").rstrip("/")
+    if "example.com" in base_url:
+        return False, "Public base URL is not configured (still using example.com)"
     include_toc = db.newsletter_get_toc(newsletter["id"])
     feedback_on = cfg.get("feedback_enabled", "1") == "1"
     # Voice block is identical for every recipient (presigned URL is the same;
@@ -692,7 +701,7 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     # disable the send button. Note: we mark sent even if some recipients
     # errored — this keeps the row from being re-sent en masse to address
     # a few stragglers; admins can resend individually if needed.
-    db.newsletter_update(newsletter["id"], status="sent", sent_at=datetime.utcnow().isoformat())
+    db.newsletter_update(newsletter["id"], status="sent", sent_at=datetime.now(timezone.utc).isoformat())
     msg = f"Sent to {sent} subscribers"
     if errors:
         msg += f". Errors: {'; '.join(errors)}"

@@ -52,6 +52,22 @@ def _humanize_errors(cfg: dict) -> list[dict]:
             headline = "Article curation failed unexpectedly"
             detail = "Claude returned an error while scoring articles. Check the technical detail below."
         errors.append({"headline": headline, "detail": detail, "raw": raw})
+
+    # The confirm/unsubscribe links in every email are built from base_url
+    # (or the PUBLIC_BASE_URL env var). If it's still the docs placeholder,
+    # those links point at example.com and silently dead-end — surface it
+    # loudly here, and the mailer refuses to send rather than mail a dead link.
+    base_url = cfg.get("base_url", "")
+    if "example.com" in base_url:
+        errors.append({
+            "headline": "Public base URL is not configured",
+            "detail": ("Confirmation and unsubscribe links are built from this value and "
+                       "currently point at the example.com placeholder, so subscribers "
+                       "can't confirm or unsubscribe. Set 'Base URL' below (or the "
+                       "PUBLIC_BASE_URL environment variable) to your real public site, "
+                       "e.g. https://secdigest.yourdomain.com."),
+            "raw": base_url,
+        })
     return errors
 
 
@@ -60,8 +76,7 @@ async def settings_page(request: Request):
     if not is_authed(request):
         return redirect_login()
     cfg = db.cfg_all()
-    return templates.TemplateResponse("settings.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "settings.html", {
         "cfg": cfg,
         "errors": _humanize_errors(cfg),
         "audit": db.audit_recent(20),

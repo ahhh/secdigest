@@ -114,7 +114,7 @@ app.include_router(voice.router)
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, error: str = ""):
-    return templates.TemplateResponse("login.html", {"request": request, "error": error})
+    return templates.TemplateResponse(request, "login.html", {"error": error})
 
 
 @app.post("/login")
@@ -123,8 +123,8 @@ async def login_submit(request: Request, password: str = Form(...)):
     # verify (which is intentionally slow). Per-IP bucket; see security.py.
     if not login_allowed(request):
         return templates.TemplateResponse(
-            "login.html",
-            {"request": request, "error": "Too many failed attempts. Try again in 15 minutes."},
+            request, "login.html",
+            {"error": "Too many failed attempts. Try again in 15 minutes."},
             status_code=429,
         )
     ph = db.cfg_get("password_hash")
@@ -138,7 +138,7 @@ async def login_submit(request: Request, password: str = Form(...)):
     # message — never confirm whether the password hash even exists, etc.
     login_record_failure(request)
     return templates.TemplateResponse(
-        "login.html", {"request": request, "error": "Wrong password"}, status_code=401
+        request, "login.html", {"error": "Wrong password"}, status_code=401
     )
 
 
@@ -153,8 +153,8 @@ async def forced_password_change_page(request: Request, error: str = ""):
     if not is_authed(request):
         return RedirectResponse("/login", status_code=302)
     return templates.TemplateResponse(
-        "forced_password_change.html",
-        {"request": request, "error": error},
+        request, "forced_password_change.html",
+        {"error": error},
     )
 
 

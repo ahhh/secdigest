@@ -24,8 +24,7 @@ router = APIRouter(dependencies=[Depends(verify_csrf)])
 async def subscribers_page(request: Request):
     if not is_authed(request):
         return redirect_login()
-    return templates.TemplateResponse("subscribers.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "subscribers.html", {
         "subscribers": db.subscriber_list(),
         "feedback_counts": db.feedback_counts_by_subscriber(),
     })

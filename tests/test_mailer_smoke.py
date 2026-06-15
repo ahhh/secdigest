@@ -167,6 +167,28 @@ def test_send_fails_when_from_is_example_dot_com(tmp_db, stub_smtp):
     assert "example.com" in msg.lower() or "from" in msg.lower()
 
 
+def test_send_fails_when_base_url_is_example_dot_com(tmp_db, stub_smtp):
+    """The placeholder base URL must be replaced before sending — otherwise every
+    unsubscribe/confirm link points at the example.com docs placeholder and the
+    subscriber can never click through. Refuse rather than mail a dead link."""
+    db.cfg_set("base_url", "https://secdigest.example.com")
+    _seed_daily()
+    db.subscriber_create("a@test.invalid")
+    ok, msg = mailer.send_newsletter("2026-05-04", kind="daily")
+    assert ok is False
+    assert "example.com" in msg.lower() or "base url" in msg.lower()
+
+
+def test_confirmation_email_fails_when_base_url_is_example_dot_com(tmp_db, stub_smtp):
+    """The double-opt-in confirm link is built from base_url/PUBLIC_BASE_URL; a
+    placeholder there means the subscriber gets an unclickable example.com link."""
+    ok, msg = mailer.send_confirmation_email(
+        "a@test.invalid", "https://secdigest.example.com/confirm/abc")
+    assert ok is False
+    assert "example.com" in msg.lower() or "base url" in msg.lower()
+    assert stub_smtp == []
+
+
 # ── Header sanitisation (M4) ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize("hostile,expected", [

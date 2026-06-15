@@ -122,7 +122,7 @@ async def test_week_article_reorder_persists_to_db(admin_client):
     tok = await get_csrf(admin_client, "/week/2026-05-04")
     r = await admin_client.post(
         "/week/2026-05-04/reorder",
-        data=[("csrf_token", tok)] + [("order", id_) for id_ in reversed_ids],
+        data={"csrf_token": tok, "order": reversed_ids},
     )
     assert r.status_code == 302, f"expected redirect, got {r.status_code}: {r.text[:200]}"
 

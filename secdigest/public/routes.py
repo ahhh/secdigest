@@ -43,8 +43,7 @@ def _public_base_url() -> str:
 
 @router.get("/", response_class=HTMLResponse)
 async def landing(request: Request, msg: str = "", status: str = ""):
-    return templates.TemplateResponse("landing.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "landing.html", {
         "message": msg or None,
         "status": status or "info",
     })
@@ -58,13 +57,12 @@ async def subscribe(request: Request,
     # Honeypot — real browsers don't fill the hidden 'website' field.
     # Pretend success either way so bots can't probe whether they tripped it.
     if website.strip():
-        return templates.TemplateResponse("thanks.html", {
-            "request": request, "email": email,
+        return templates.TemplateResponse(request, "thanks.html", {
+            "email": email,
         })
 
     if not subscribe_allowed(request):
-        return templates.TemplateResponse("landing.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "landing.html", {
             "message": "Too many attempts from your network. Try again in an hour.",
             "status": "error",
         }, status_code=429)
@@ -76,8 +74,7 @@ async def subscribe(request: Request,
     # malformed value. 254 = SMTP's hard cap on email length.
     email_clean = (email or "").strip().lower().replace("\r", "").replace("\n", "").replace("\x00", "")
     if len(email_clean) > 254 or not _EMAIL_RE.match(email_clean):
-        return templates.TemplateResponse("landing.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "landing.html", {
             "message": "That doesn't look like a valid email address.",
             "status": "error",
         }, status_code=400)
@@ -109,14 +106,12 @@ async def subscribe(request: Request,
             # error text to the user (info leak) and don't differentiate from
             # the success page in a way that leaks subscription state.
             print(f"[public] confirmation email failed for {email_clean}: {smtp_msg}")
-            return templates.TemplateResponse("landing.html", {
-                "request": request,
+            return templates.TemplateResponse(request, "landing.html", {
                 "message": "We couldn't send the confirmation email right now. Please try again in a few minutes.",
                 "status": "error",
             }, status_code=503)
 
-    return templates.TemplateResponse("thanks.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "thanks.html", {
         "email": email_clean,
     })
 
@@ -128,8 +123,7 @@ async def confirm(request: Request, token: str):
     success, None on an unknown/used token. The template just toggles the
     'ok' UI based on that — no error text leaks whether a token ever existed."""
     sub = db.subscriber_confirm(token)
-    return templates.TemplateResponse("confirmed.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "confirmed.html", {
         "ok": sub is not None,
         "cadence": sub["cadence"] if sub else None,
     })
@@ -145,14 +139,14 @@ async def feedback(request: Request, token: str, newsletter_id: int, vote: str):
     converge on the same template so a probe can't enumerate which tokens are
     valid by comparing response bodies."""
     if vote not in ("signal", "noise"):
-        return templates.TemplateResponse("feedback.html", {
-            "request": request, "ok": False,
+        return templates.TemplateResponse(request, "feedback.html", {
+            "ok": False,
             "message": "That isn't a valid feedback option.",
         }, status_code=400)
 
     if not feedback_allowed(request):
-        return templates.TemplateResponse("feedback.html", {
-            "request": request, "ok": False,
+        return templates.TemplateResponse(request, "feedback.html", {
+            "ok": False,
             "message": "Too many attempts from your network. Try again later.",
         }, status_code=429)
     feedback_record_attempt(request)
@@ -161,37 +155,36 @@ async def feedback(request: Request, token: str, newsletter_id: int, vote: str):
     # bounced rather than silently recorded, so the admin's setting is honoured
     # in both directions (no buttons rendered + no votes accepted).
     if db.cfg_get("feedback_enabled") != "1":
-        return templates.TemplateResponse("feedback.html", {
-            "request": request, "ok": False,
+        return templates.TemplateResponse(request, "feedback.html", {
+            "ok": False,
             "message": "Feedback isn't enabled right now.",
         }, status_code=404)
 
     sub = db.subscriber_get_by_token(token)
     if not sub:
-        return templates.TemplateResponse("feedback.html", {
-            "request": request, "ok": False,
+        return templates.TemplateResponse(request, "feedback.html", {
+            "ok": False,
             "message": "This feedback link is invalid or has expired.",
         })
 
     # Confirm the newsletter exists; we don't need to load it, just guard against
     # FK-violation errors and against a hostile caller spamming arbitrary IDs.
     if not db.newsletter_get_by_id(newsletter_id):
-        return templates.TemplateResponse("feedback.html", {
-            "request": request, "ok": False,
+        return templates.TemplateResponse(request, "feedback.html", {
+            "ok": False,
             "message": "We couldn't find that issue.",
         })
 
     db.feedback_record(sub["id"], newsletter_id, vote)
-    return templates.TemplateResponse("feedback.html", {
-        "request": request, "ok": True, "vote": vote,
+    return templates.TemplateResponse(request, "feedback.html", {
+        "ok": True, "vote": vote,
     })
 
 
 @router.get("/unsubscribe/{token}", response_class=HTMLResponse)
 async def unsubscribe(request: Request, token: str):
     if not unsubscribe_allowed(request):
-        return templates.TemplateResponse("unsubscribed.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "unsubscribed.html", {
             "message": "Too many attempts from your network. Try again later.",
         }, status_code=429)
     unsubscribe_record(request)
@@ -204,6 +197,6 @@ async def unsubscribe(request: Request, token: str):
         msg = "You're already unsubscribed."
     else:
         msg = "This unsubscribe link is invalid or has already been used."
-    return templates.TemplateResponse("unsubscribed.html", {
-        "request": request, "message": msg,
+    return templates.TemplateResponse(request, "unsubscribed.html", {
+        "message": msg,
     })

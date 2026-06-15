@@ -115,8 +115,7 @@ async def archive(request: Request):
 
         w["days"].append(n)
 
-    return templates.TemplateResponse("archive.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "archive.html", {
         "months": months,
         "daily_counts": daily_counts,
         "weekly_counts": weekly_counts,
@@ -157,8 +156,7 @@ async def day_view(request: Request, date_str: str):
     # numbers from another day's pull.
     fetch_summary = (db.cfg_get("last_fetch_summary")
                      if db.cfg_get("last_fetch_summary_date") == date_str else "")
-    return templates.TemplateResponse("day.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "day.html", {
         "date_str": date_str,
         "newsletter": newsletter,
         "articles": articles,
@@ -300,8 +298,7 @@ async def day_pool(request: Request, date_str: str):
     articles = sorted(articles, key=lambda a: a.get("relevance_score", 0), reverse=True)
     included_count = sum(1 for a in articles if a.get("included", 1))
     max_curator = int(db.cfg_get("max_curator_articles") or 10)
-    return templates.TemplateResponse("pool.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "pool.html", {
         "date_str": date_str,
         "newsletter": newsletter,
         "articles": articles,

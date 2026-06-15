@@ -23,8 +23,7 @@ async def feeds_page(request: Request):
     if not is_authed(request):
         return redirect_login()
     feeds = db.rss_feed_list()
-    return templates.TemplateResponse("feeds.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "feeds.html", {
         "feeds": feeds,
         "hn_pool_min": int(db.cfg_get("hn_pool_min") or 10),
     })

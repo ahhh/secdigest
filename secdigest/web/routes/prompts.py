@@ -21,8 +21,7 @@ router = APIRouter(dependencies=[Depends(verify_csrf)])
 async def prompts_page(request: Request):
     if not is_authed(request):
         return redirect_login()
-    return templates.TemplateResponse("prompts.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "prompts.html", {
         "prompts": db.prompt_list(),
     })
 

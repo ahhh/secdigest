@@ -23,8 +23,7 @@ router = APIRouter(dependencies=[Depends(verify_csrf)])
 async def templates_list(request: Request):
     if not is_authed(request):
         return redirect_login()
-    return templates.TemplateResponse("email_templates.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "email_templates.html", {
         "email_templates": db.email_template_list(),
         "header_html": db.cfg_get("header_html") or "",
     })
