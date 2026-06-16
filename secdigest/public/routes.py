@@ -34,11 +34,19 @@ _VALID_CADENCES = ("daily", "weekly", "monthly")
 
 
 def _public_base_url() -> str:
-    """Base URL the confirmation/unsubscribe links should point at. Falls back to
-    the admin's base_url config if PUBLIC_BASE_URL isn't set."""
-    return (config.PUBLIC_BASE_URL
-            or db.cfg_get("base_url")
-            or "http://localhost:8000").rstrip("/")
+    """Base URL the confirmation/unsubscribe links should point at.
+
+    Resolution order: PUBLIC_BASE_URL env var, then the admin-configured
+    base_url (Settings page), then a localhost fallback. A candidate still
+    holding the docs placeholder ``example.com`` is treated as unset and
+    skipped — otherwise a stale PUBLIC_BASE_URL placeholder would silently
+    override a correct base_url the operator set in the UI, which is exactly
+    the footgun this guards against."""
+    for candidate in (config.PUBLIC_BASE_URL, db.cfg_get("base_url")):
+        candidate = (candidate or "").strip()
+        if candidate and "example.com" not in candidate:
+            return candidate.rstrip("/")
+    return "http://localhost:8000"
 
 
 @router.get("/", response_class=HTMLResponse)

@@ -42,6 +42,16 @@ def _key() -> bytes:
     return hashlib.sha256(config.SECRET_KEY.encode("utf-8")).digest()
 
 
+def is_encrypted(value: str) -> bool:
+    """True only for one of our own ``enc:v1:`` blobs.
+
+    Distinguishes a real ciphertext from the two values that ``decrypt``
+    also returns ``""``/pass-through for — empty input and legacy plaintext —
+    so callers can tell "couldn't decrypt" apart from "nothing to decrypt".
+    """
+    return bool(value) and value.startswith(_PREFIX)
+
+
 def encrypt(plaintext: str) -> str:
     """Encrypt a string. Returns 'enc:v1:<base64>' or '' for empty input."""
     # Treat empty strings as "nothing to protect" — keeps optional
