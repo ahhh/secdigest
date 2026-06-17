@@ -120,7 +120,7 @@ def compose_voice_text(newsletter: dict, articles: list[dict],
     n = len(included)
     plural = "story" if n == 1 else "stories"
 
-    parts = [f"SecDigest, {date_str}.",
+    parts = [f"Trailhead, {date_str}.",
              f"{n} {plural} in {label} issue."]
     for i, a in enumerate(included[:8], 1):
         title = (a.get("title") or "").strip().rstrip(".")

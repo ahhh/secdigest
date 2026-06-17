@@ -1,16 +1,16 @@
 {% extends "base.html" %}
-{% block title %}SecDigest — Subscribers{% endblock %}
+{% block title %}Trailhead — Subscribers{% endblock %}
 {% block content %}
 
 <div class="page-header">
   <h1 class="page-title">Subscribers</h1>
   {% set actives = subscribers | selectattr('active') | list %}
   <p class="page-sub">{{ actives | length }} active · {{ subscribers | length }} total
-    {% if actives %}
-    · daily {{ actives | selectattr('cadence', 'equalto', 'daily') | list | length }}
-    · weekly {{ actives | selectattr('cadence', 'equalto', 'weekly') | list | length }}
-    · monthly {{ actives | selectattr('cadence', 'equalto', 'monthly') | list | length }}
-    {% endif %}
+    {% for a in all_areas %}
+    {% set n = [] %}
+    {% for s in actives %}{% if a.slug in areas_map.get(s.id, []) %}{{ n.append(1) or '' }}{% endif %}{% endfor %}
+    · {{ a.name }} {{ n | length }}
+    {% endfor %}
   </p>
 </div>
 
@@ -25,8 +25,18 @@
       <div class="form-group" style="flex:1">
         <input type="text" name="name" class="input" placeholder="Name (optional)">
       </div>
-      <button type="submit" class="btn btn-primary">Add</button>
     </div>
+    <div class="form-group" style="margin-top:8px;">
+      <label class="label">Areas</label>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;">
+        {% for a in all_areas %}
+        <label style="display:inline-flex;align-items:center;gap:5px;font-size:.9em;">
+          <input type="checkbox" name="areas" value="{{ a.slug }}"> {{ a.name }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary" style="margin-top:10px;">Add</button>
   </form>
 </div>
 
@@ -52,7 +62,7 @@
     <tr>
       <th>Email</th>
       <th>Name</th>
-      <th>Cadence</th>
+      <th>Areas</th>
       <th>Status</th>
       <th>Added</th>
       <th></th>
@@ -75,14 +85,16 @@
         {% endif %}
       </td>
       <td>
-        <form action="/subscribers/{{ s.id }}/cadence" method="post" style="display:inline">
+        <form action="/subscribers/{{ s.id }}/areas" method="post" style="display:inline">
           {{ csrf_input(request) }}
-          <select name="cadence" class="input" style="padding:4px 8px;font-size:.85em;width:auto;"
-                  onchange="this.form.submit()">
-            {% for c in ['daily', 'weekly', 'monthly'] %}
-            <option value="{{ c }}" {% if (s.cadence or 'daily') == c %}selected{% endif %}>{{ c }}</option>
-            {% endfor %}
-          </select>
+          {% set mine = areas_map.get(s.id, []) %}
+          {% for a in all_areas %}
+          <label style="display:inline-flex;align-items:center;gap:3px;font-size:.82em;margin-right:8px;white-space:nowrap;">
+            <input type="checkbox" name="areas" value="{{ a.slug }}"
+                   {% if a.slug in mine %}checked{% endif %} onchange="this.form.submit()">
+            {{ a.name }}
+          </label>
+          {% endfor %}
         </form>
       </td>
       <td>

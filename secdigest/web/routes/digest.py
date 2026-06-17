@@ -74,10 +74,10 @@ async def _digest_view(request: Request, kind: str, date_str: str):
     if not active_subject and email_templates:
         tmpl = next((t for t in email_templates if t["id"] == active_template_id),
                     email_templates[0])
-        default_subject = f"SecDigest {_kind_label(kind)} — {{date}}"
+        default_subject = f"Trailhead {_kind_label(kind)} — {{date}}"
         raw = tmpl["subject"] if tmpl["subject"] else default_subject
         # If the built-in subject still uses the daily form, swap in the digest form
-        # so a weekly issue doesn't go out subjected as "SecDigest — <monday>".
+        # so a weekly issue doesn't go out subjected as "Trailhead — <monday>".
         if "Weekly" not in raw and "Monthly" not in raw and kind in ("weekly", "monthly"):
             raw = default_subject
         active_subject = raw.replace("{date}", period_start)

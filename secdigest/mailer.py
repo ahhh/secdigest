@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from secdigest import db, crypto
+from secdigest import db, crypto, areas
 
 
 def _sanitize_header(value: str) -> str:
@@ -143,7 +143,7 @@ def _smtp_send(to_email: str, subject: str, html_body: str, text_body: str) -> t
     smtp_host = cfg.get("smtp_host", "")
     if not smtp_host:
         return False, "SMTP not configured"
-    smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
+    smtp_from = cfg.get("smtp_from", "Trailhead <noreply@example.com>")
     # Refuse to send if the placeholder From is still in place — the only
     # thing worse than no email is one that goes out as noreply@example.com.
     if "example.com" in smtp_from:
@@ -212,7 +212,7 @@ def send_confirmation_email(to_email: str, confirm_url: str) -> tuple[bool, str]
         f'<div style="max-width:480px;margin:0 auto;background:#fff;border-radius:10px;'
         f'padding:32px;box-shadow:0 1px 3px rgba(0,0,0,.06);">'
         f'<h1 style="margin:0 0 12px;font-size:20px;color:#0969da;">Confirm your subscription</h1>'
-        f'<p style="line-height:1.6;">Click the link below to confirm your SecDigest subscription. '
+        f'<p style="line-height:1.6;">Click the link below to confirm your Trailhead subscription. '
         f'If you didn\'t request this, just ignore the message.</p>'
         f'<p style="margin:24px 0;">'
         f'<a href="{safe_url}" style="display:inline-block;padding:12px 22px;background:#0969da;'
@@ -223,11 +223,11 @@ def send_confirmation_email(to_email: str, confirm_url: str) -> tuple[bool, str]
         f'</div></body></html>'
     )
     text_body = (
-        "Confirm your SecDigest subscription\n\n"
+        "Confirm your Trailhead subscription\n\n"
         "Click the link below to confirm. If you didn't request this, just ignore this message.\n\n"
         f"{safe_url_text}\n"
     )
-    return _smtp_send(to_email, "Confirm your SecDigest subscription", html_body, text_body)
+    return _smtp_send(to_email, "Confirm your Trailhead subscription", html_body, text_body)
 
 
 def _render_toc(included: list[dict], is_2col: bool = False) -> str:
@@ -454,7 +454,7 @@ def render_email_html(newsletter: dict, articles: list[dict],
 
 
 def _render_text(newsletter: dict, articles: list[dict], unsubscribe_url: str = "") -> str:
-    lines = [f"SecDigest — {newsletter['date']}", "=" * 40, ""]
+    lines = [f"Trailhead — {newsletter['date']}", "=" * 40, ""]
     for i, a in enumerate(articles):
         if not a.get("included", 1):
             continue
@@ -478,19 +478,23 @@ def _load_for_send(date_str: str, kind: str) -> tuple[dict | None, list[dict]]:
     newsletter = db.newsletter_get(date_str, kind=kind)
     if not newsletter:
         return None, []
-    if kind == "daily":
-        articles = db.article_list(newsletter["id"])
-    else:
+    # Weekly/monthly digests pull from the digest_articles join; daily AND area
+    # issues (kind = an area slug) own their articles directly.
+    if kind in ("weekly", "monthly"):
         articles = db.digest_article_list(newsletter["id"])
+    else:
+        articles = db.article_list(newsletter["id"])
     return newsletter, articles
 
 
 def _default_subject_for(kind: str) -> str:
+    if areas.is_area(kind):
+        return f"Trailhead {areas.area_name(kind)} — week of {{date}}"
     if kind == "weekly":
-        return "SecDigest Weekly — {date}"
+        return "Trailhead Weekly — {date}"
     if kind == "monthly":
-        return "SecDigest Monthly — {date}"
-    return "SecDigest — {date}"
+        return "Trailhead Monthly — {date}"
+    return "Trailhead — {date}"
 
 
 def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple[bool, str]:
@@ -518,7 +522,7 @@ def send_test_email(date_str: str, recipient: str, kind: str = "daily") -> tuple
     default_subject = template["subject"] if template else _default_subject_for(kind)
     subject = (subject_override or default_subject).replace("{date}", date_str)
 
-    smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
+    smtp_from = cfg.get("smtp_from", "Trailhead <noreply@example.com>")
     if "example.com" in smtp_from:
         return False, "From address is not configured (still using example.com)"
     # Single sanitisation point — applies after the {date} substitution above so
@@ -594,9 +598,15 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     if not any(a.get("included", 1) for a in articles):
         return False, "No included articles to send"
 
-    subscribers = db.subscriber_active(cadence=kind)
+    # Area issues deliver to subscribers who follow that area; daily/weekly/
+    # monthly fall back to the legacy cadence selector.
+    if areas.is_area(kind):
+        subscribers = db.subscriber_active_for_area(kind)
+    else:
+        subscribers = db.subscriber_active(cadence=kind)
     if not subscribers:
-        return False, f"No active {kind} subscribers"
+        label = areas.area_name(kind) if areas.is_area(kind) else kind
+        return False, f"No active {label} subscribers"
 
     cfg = db.cfg_all()
     smtp_host = cfg.get("smtp_host", "")
@@ -608,7 +618,7 @@ def send_newsletter(date_str: str, kind: str = "daily") -> tuple[bool, str]:
     default_subject = template["subject"] if template else _default_subject_for(kind)
     subject = (subject_override or default_subject).replace("{date}", date_str)
 
-    smtp_from = cfg.get("smtp_from", "SecDigest <noreply@example.com>")
+    smtp_from = cfg.get("smtp_from", "Trailhead <noreply@example.com>")
     if "example.com" in smtp_from:
         return False, "From address is not configured (still using example.com)"
     # Single sanitisation boundary — applies after every mutation above (template

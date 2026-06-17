@@ -9,7 +9,7 @@ import re
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
-from secdigest import db
+from secdigest import db, areas
 from secdigest.web import templates
 from secdigest.web.auth import is_authed, redirect_login
 from secdigest.web.csrf import verify_csrf
@@ -27,19 +27,33 @@ async def subscribers_page(request: Request):
     return templates.TemplateResponse(request, "subscribers.html", {
         "subscribers": db.subscriber_list(),
         "feedback_counts": db.feedback_counts_by_subscriber(),
+        "areas_map": db.subscriber_areas_map(),
+        "all_areas": areas.AREAS,
     })
 
 
 @router.post("/subscribers")
-async def add_subscriber(request: Request, email: str = Form(...), name: str = Form("")):
+async def add_subscriber(request: Request, email: str = Form(...), name: str = Form(""),
+                         areas_sel: list[str] = Form(default=[], alias="areas")):
     if not is_authed(request):
         return JSONResponse({"error": "not authenticated"}, status_code=401)
     email_clean = (email or "").strip().replace("\r", "").replace("\n", "")
     if not _EMAIL_RE.match(email_clean):
         return RedirectResponse("/subscribers?msg=Invalid+email+address&status=error", status_code=302)
     result = db.subscriber_create(email_clean.lower(), name.strip())
+    if result:
+        db.subscriber_set_areas(result["id"], areas_sel)
     msg = "Added" if result else "Already+exists"
     return RedirectResponse(f"/subscribers?msg={msg}", status_code=302)
+
+
+@router.post("/subscribers/{sub_id}/areas")
+async def set_areas(request: Request, sub_id: int,
+                    areas_sel: list[str] = Form(default=[], alias="areas")):
+    if not is_authed(request):
+        return JSONResponse({"error": "not authenticated"}, status_code=401)
+    db.subscriber_set_areas(sub_id, areas_sel)
+    return RedirectResponse("/subscribers", status_code=302)
 
 
 @router.post("/subscribers/{sub_id}/toggle")

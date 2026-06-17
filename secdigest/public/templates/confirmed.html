@@ -3,33 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>secdigest // {% if ok %}wired in{% else %}link expired{% endif %}</title>
+  <title>Trailhead // {% if ok %}you're in{% else %}link expired{% endif %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 </head>
 <body>
-  <div class="scanlines" aria-hidden="true"></div>
-  <div class="grid-bg" aria-hidden="true"></div>
-
   <header class="topbar">
-    <span class="prompt">&gt;</span>
-    <span class="brand">secdigest<span class="cursor">_</span></span>
-    <span class="topbar-meta">// {% if ok %}connected{% else %}link dead{% endif %}</span>
+    <svg class="mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M3 20 L9 8 L13 15 L16 10 L21 20 Z" fill="currentColor"/>
+      <path d="M9 8 L11 11 L9.6 12.4 L8 10 Z" fill="#f6f1e6"/>
+    </svg>
+    <span class="brand">Trailhead</span>
+    <span class="topbar-meta">{% if ok %}on the crew{% else %}link dead{% endif %}</span>
   </header>
 
   <main class="hero narrow">
     {% if ok %}
-      <h1>you're in.</h1>
+      <span class="kicker">Welcome aboard</span>
+      <h1>You're on the trail.</h1>
       <p class="lead">
-        you'll get the <strong class="hl">{{ cadence }}</strong> wire from now on.
-        first one shows up at the next scheduled send.
+        You're signed up for
+        <strong class="hl">{% if areas %}{{ areas | join(' and ') }}{% else %}the trail{% endif %}</strong>.
+        Your Saturday dispatch — forecast, a trail worth the drive, and the
+        occasional guided trip — lands at the next send.
       </p>
     {% else %}
-      <h1>that link's dead.</h1>
+      <span class="kicker">Hmm</span>
+      <h1>That link's a dead end.</h1>
       <p class="lead">
-        confirm links are one-shot. if you already clicked it, you're good.
-        otherwise, just sign up again.
+        Confirm links are one-shot. If you already clicked it, you're good to go.
+        Otherwise, just sign up again.
       </p>
-      <p class="back"><a href="/" class="link-back">&lt; subscribe</a></p>
+      <p class="back"><a href="/" class="link-back">&larr; subscribe</a></p>
     {% endif %}
   </main>
 </body>

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="csrf-token" content="{{ csrf_token_value(request) }}">
-  <title>{% block title %}SecDigest{% endblock %}</title>
+  <title>{% block title %}Trailhead{% endblock %}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
@@ -12,9 +12,11 @@
 </head>
 <body>
   <nav class="nav">
-    <a href="/" class="nav-brand">SecDigest</a>
+    <a href="/" class="nav-brand">Trailhead</a>
     <div class="nav-links">
-      <a href="/" class="nav-link {% if request.url.path == '/' or '/day/' in request.url.path %}active{% endif %}">Today</a>
+      <a href="/areas" class="nav-link {% if '/areas' in request.url.path %}active{% endif %}">Areas</a>
+      <a href="/trails" class="nav-link {% if '/trails' in request.url.path %}active{% endif %}">Trails</a>
+      <a href="/" class="nav-link {% if request.url.path == '/' or '/day/' in request.url.path %}active{% endif %}">News</a>
       <a href="/archive" class="nav-link {% if request.url.path == '/archive' %}active{% endif %}">Archive</a>
       <a href="/prompts" class="nav-link {% if request.url.path == '/prompts' %}active{% endif %}">Prompts</a>
       <a href="/feeds" class="nav-link {% if '/feeds' in request.url.path %}active{% endif %}">Feeds</a>

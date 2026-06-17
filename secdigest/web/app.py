@@ -27,7 +27,7 @@ from secdigest.web.auth import is_authed, verify_password, ensure_default_passwo
 from secdigest.web.csrf import verify_csrf
 from secdigest.web.routes import (
     newsletter, prompts, subscribers, settings, email_templates_route,
-    unsubscribe, feeds, digest, voice,
+    unsubscribe, feeds, digest, voice, areas,
 )
 from secdigest.web.security import login_allowed, login_record_failure, login_clear
 import secdigest.scheduler as sched
@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     sched.stop_scheduler()
 
 
-app = FastAPI(lifespan=lifespan, title="SecDigest")
+app = FastAPI(lifespan=lifespan, title="Trailhead")
 
 
 # NOTE on middleware order: Starlette's add_middleware uses insert(0, ...), so the
@@ -108,6 +108,7 @@ app.include_router(unsubscribe.router)
 app.include_router(feeds.router)
 app.include_router(digest.router)
 app.include_router(voice.router)
+app.include_router(areas.router)
 
 
 # ── Auth routes ───────────────────────────────────────────────────────────────

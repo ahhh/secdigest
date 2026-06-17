@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}Trailhead — Areas{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Weekly Areas</h1>
+  <p class="page-sub">Each area sends one issue every Saturday — a 7-day forecast, a random
+    easy/moderate trail, plus any guided trips you add. Upcoming issue:
+    <strong class="mono">{{ week_start }} → {{ week_end }}</strong>.</p>
+</div>
+
+{% for c in cards %}
+<div class="form-card" style="margin-bottom:30px;">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;">
+    <div>
+      <span class="section-label" style="font-size:1.1em;">{{ c.area.name }}</span>
+      <span class="text-muted" style="margin-left:8px;">{{ c.subscriber_count }} subscribers · {{ c.trail_count }} trails in pool</span>
+    </div>
+    <div class="btn-group">
+      {% if c.newsletter %}
+      <span class="badge badge-{{ 'green' if c.newsletter.status == 'sent' else 'blue' }}">{{ c.newsletter.status }}</span>
+      {% else %}
+      <span class="badge badge-gray">not built</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Build / refresh actions -->
+  <div class="btn-group" style="margin:14px 0;flex-wrap:wrap;gap:6px;">
+    <form action="/areas/{{ c.area.slug }}/build" method="post" style="display:inline">
+      {{ csrf_input(request) }}
+      <button class="btn btn-sm btn-primary">{{ '↻ Rebuild' if c.newsletter else '＋ Build issue' }}</button>
+    </form>
+    <form action="/areas/{{ c.area.slug }}/import-trails" method="post" style="display:inline">
+      {{ csrf_input(request) }}
+      <button class="btn btn-sm btn-ghost">⬇ Import trails from komoot</button>
+    </form>
+    {% if c.newsletter %}
+    <form action="/areas/{{ c.area.slug }}/rebuild-weather" method="post" style="display:inline">
+      {{ csrf_input(request) }}
+      <button class="btn btn-sm btn-ghost">⛅ Refresh weather</button>
+    </form>
+    <form action="/areas/{{ c.area.slug }}/reroll-trail" method="post" style="display:inline">
+      {{ csrf_input(request) }}
+      <button class="btn btn-sm btn-ghost">🎲 Reroll trail</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <!-- Issue contents -->
+  {% if c.articles %}
+  <table class="table">
+    <thead><tr><th>Type</th><th>Item</th><th></th></tr></thead>
+    <tbody>
+      {% for a in c.articles %}
+      <tr>
+        <td><span class="badge badge-{{ 'blue' if a.source == 'weather' else 'green' if a.source == 'trail' else 'gray' }}">{{ a.source or 'item' }}</span></td>
+        <td>
+          <div style="font-weight:600;color:var(--text)">{{ a.title }}</div>
+          {% if a.summary %}<div class="text-muted" style="font-size:0.85em;">{{ a.summary }}</div>{% endif %}
+          {% if a.url %}<div class="text-muted mono" style="font-size:0.78em;"><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.url }}</a></div>{% endif %}
+        </td>
+        <td>
+          {% if a.source == 'trip' %}
+          <form action="/areas/{{ c.area.slug }}/article/{{ a.id }}/remove" method="post" style="display:inline"
+                onsubmit="return confirm('Remove this trip?')">
+            {{ csrf_input(request) }}
+            <button class="btn btn-sm btn-ghost btn-danger">✕</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state"><p>No issue built for this week yet — hit Build.</p></div>
+  {% endif %}
+
+  <!-- Add a trip ad -->
+  <div class="section-label" style="margin-top:18px;">Advertise a trip</div>
+  <form action="/areas/{{ c.area.slug }}/add-trip" method="post" style="margin-top:8px;">
+    {{ csrf_input(request) }}
+    <div class="form-row">
+      <div class="form-group" style="flex:2"><label class="label">Title</label>
+        <input type="text" name="title" class="input" required placeholder="Guided sunrise hike — Sat Aug 9"></div>
+      <div class="form-group" style="flex:3"><label class="label">Link <span class="text-muted">(booking/details)</span></label>
+        <input type="url" name="url" class="input" placeholder="https://www.takeahikeadventures.com/..."></div>
+    </div>
+    <div class="form-group"><label class="label">Blurb</label>
+      <input type="text" name="summary" class="input" placeholder="Two spots left — meet at the trailhead at 5:30am."></div>
+    <button class="btn btn-sm btn-primary">＋ Add trip</button>
+  </form>
+
+  <!-- AllTrails/komoot list URL -->
+  <div class="section-label" style="margin-top:18px;">Full trail list link <span class="text-muted">(optional)</span></div>
+  <form action="/areas/{{ c.area.slug }}/list-url" method="post" style="margin-top:8px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+    {{ csrf_input(request) }}
+    <div class="form-group" style="flex:1;min-width:280px;margin:0;">
+      <input type="url" name="list_url" class="input" value="{{ c.list_url }}"
+             placeholder="https://www.alltrails.com/list/... or komoot collection">
+    </div>
+    <button class="btn btn-sm btn-ghost">Save link</button>
+  </form>
+
+  {% if c.newsletter %}
+  <!-- Preview + send -->
+  <div class="section-label" style="margin-top:20px;">Preview & send</div>
+  <iframe src="/areas/{{ c.area.slug }}/preview" title="preview"
+          style="width:100%;height:420px;border:1px solid var(--border, #30363d);border-radius:8px;background:#fff;margin-top:8px;"></iframe>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:12px;">
+    <form action="/areas/{{ c.area.slug }}/send-test" method="post" style="display:flex;gap:6px;align-items:flex-end;">
+      {{ csrf_input(request) }}
+      <div class="form-group" style="margin:0;">
+        <label class="label">Send test to</label>
+        <input type="email" name="test_recipient" class="input" placeholder="you@example.com" required>
+      </div>
+      <button class="btn btn-sm btn-ghost">Send test</button>
+    </form>
+    <form action="/areas/{{ c.area.slug }}/send" method="post" style="display:inline"
+          onsubmit="return confirm('Send this issue to all {{ c.area.name }} subscribers?')">
+      {{ csrf_input(request) }}
+      <button class="btn btn-sm btn-primary">Send to {{ c.subscriber_count }} subscribers</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% endblock %}

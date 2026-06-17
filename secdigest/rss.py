@@ -106,7 +106,7 @@ def fetch_feed(url: str, max_articles: int = 5) -> list[dict]:
         # → https upgrade, a /feed → /feed/ canonicalisation. Custom UA is
         # polite (some feeds reject the default httpx UA).
         with httpx.Client(follow_redirects=False, timeout=10,
-                          headers={"User-Agent": "Mozilla/5.0 (compatible; SecDigest/1.0)"}) as client:
+                          headers={"User-Agent": "Mozilla/5.0 (compatible; Trailhead/1.0)"}) as client:
             current = url
             resp = None
             for _ in range(_MAX_REDIRECTS + 1):

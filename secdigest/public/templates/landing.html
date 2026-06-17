@@ -3,32 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>secdigest // signal from the wire</title>
+  <title>Trailhead // news from the trail</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 </head>
 <body>
-  <div class="scanlines" aria-hidden="true"></div>
-  <div class="grid-bg" aria-hidden="true"></div>
+  <!-- decorative ridgeline behind the hero -->
+  <div class="ridge" aria-hidden="true">
+    <svg viewBox="0 0 1440 320" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+      <path fill="#7ba588" fill-opacity="0.45" d="M0,224 L180,140 L320,210 L470,96 L640,200 L820,120 L1000,220 L1180,150 L1440,240 L1440,320 L0,320 Z"/>
+      <path fill="#2f5d46" fill-opacity="0.55" d="M0,288 L200,200 L360,270 L540,170 L720,260 L900,190 L1080,272 L1280,210 L1440,280 L1440,320 L0,320 Z"/>
+    </svg>
+  </div>
 
   <header class="topbar">
-    <span class="prompt">&gt;</span>
-    <span class="brand">secdigest<span class="cursor">_</span></span>
-    <span class="topbar-meta">// <a href="https://github.com/ahhh/secdigest" class="topbar-link" target="_blank" rel="noopener">0xSECD</a> // active feed</span>
+    <svg class="mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M3 20 L9 8 L13 15 L16 10 L21 20 Z" fill="currentColor"/>
+      <path d="M9 8 L11 11 L9.6 12.4 L8 10 Z" fill="#f6f1e6"/>
+    </svg>
+    <span class="brand">Trailhead</span>
+    <span class="topbar-meta">trail dispatches &middot; <a href="https://www.takeahikeadventures.com/" class="topbar-link" target="_blank" rel="noopener">take a hike</a></span>
   </header>
 
   <main class="hero">
-    <h1 class="glitch" data-text="signal from the wire.">signal from the wire.</h1>
+    <span class="kicker">A field journal for the inbox</span>
+    <h1 class="glitch" data-text="News from the trail.">News from the trail.</h1>
 
     <p class="lead">
-      we pull security stories from the corners of the internet,
-      score them for what actually matters, and ship the good stuff to your inbox.
-      no listicles. no thinkpieces. just the wire.
+      We comb the best outdoor publications, public-lands newsrooms, and
+      trail-condition blogs &mdash; <strong class="hl">Backpacker</strong>,
+      <strong class="hl">Outside</strong>, GearJunkie, the Park Service, AllTrails
+      and more &mdash; then send the stories worth lacing up for. Gear launches,
+      trail closures, conservation news, and the routes worth your weekend.
     </p>
 
     {% if message %}
     <div class="flash flash-{{ status }}">
-      <span class="flash-prefix">[ {{ status }} ]</span> {{ message }}
+      <span class="flash-prefix">{{ status }}</span> {{ message }}
     </div>
     {% endif %}
 
@@ -37,45 +48,41 @@
         <span class="terminal-dot"></span>
         <span class="terminal-dot"></span>
         <span class="terminal-dot"></span>
-        <span class="terminal-title">// subscribe</span>
+        <span class="terminal-title">Join the trail crew</span>
       </div>
 
       <form action="/subscribe" method="post" class="subscribe-form">
         <label class="field">
-          <span class="field-label">&gt; email</span>
-          <input type="email" name="email" placeholder="you@somewhere.net"
+          <span class="field-label">Email</span>
+          <input type="email" name="email" placeholder="you@trailhead.com"
                  required autocomplete="email" autofocus>
         </label>
 
         <fieldset class="cadence-group">
-          <legend>&gt; frequency</legend>
+          <legend>Pick your trails &mdash; one or both</legend>
 
           <label class="radio">
-            <input type="radio" name="cadence" value="daily" checked>
+            <input type="checkbox" name="areas" value="utah">
             <span class="radio-marker"></span>
             <span class="radio-text">
-              <strong>daily</strong>
-              <em>every weekday morning. what hit overnight.</em>
+              <strong>Utah</strong>
+              <em>Wasatch, the desert parks, and the canyons.</em>
             </span>
           </label>
 
           <label class="radio">
-            <input type="radio" name="cadence" value="weekly">
+            <input type="checkbox" name="areas" value="poconos">
             <span class="radio-marker"></span>
             <span class="radio-text">
-              <strong>weekly</strong>
-              <em>top 10 of the week. lands monday.</em>
+              <strong>The Poconos</strong>
+              <em>Northeast PA ridges, waterfalls, and lake loops.</em>
             </span>
           </label>
 
-          <label class="radio">
-            <input type="radio" name="cadence" value="monthly">
-            <span class="radio-marker"></span>
-            <span class="radio-text">
-              <strong>monthly</strong>
-              <em>the month's highlights. on the 1st.</em>
-            </span>
-          </label>
+          <p class="fineprint" style="margin-top:6px">
+            One email every Saturday for each region you pick &mdash; the week's
+            forecast, a trail worth lacing up for, and the occasional guided trip.
+          </p>
         </fieldset>
 
         <!-- honeypot — invisible to humans, irresistible to bots -->
@@ -85,18 +92,18 @@
           </label>
         </div>
 
-        <button type="submit" class="btn">&gt;&gt; subscribe</button>
+        <button type="submit" class="btn">Hit the trail &rarr;</button>
 
         <p class="fineprint">
-          we'll send a confirm link first &mdash; click it and you're in.
-          unsubscribe whenever, link's in every email.
+          We'll send a confirm link first &mdash; click it and you're in.
+          Unsubscribe anytime; the link's in every email.
         </p>
       </form>
     </section>
   </main>
 
   <footer class="footer">
-    <span class="footer-line">// secdigest &middot; self-hosted &middot; the wire never sleeps</span>
+    <span class="footer-line">Trailhead &middot; dispatches from the trail &middot; pack it in, pack it out</span>
   </footer>
 </body>
 </html>

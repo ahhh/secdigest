@@ -1,12 +1,13 @@
-"""Fetch HN top stories and score them for security relevance via Claude.
+"""Fetch outdoor/hiking stories and score them for trail relevance via Claude.
 
 This is the heart of the daily pipeline. The high-level flow:
 
-    HN top + HN new + active RSS feeds
+    active RSS feeds (Backpacker, Outside, GearJunkie, NPS, AllTrails, …)
         ─►  merge & dedup against every URL ever stored
-        ─►  Claude Haiku scores each new story 0–10 for security relevance
+        ─►  Claude Haiku scores each new story 0–10 for hiking relevance
         ─►  reserve a configurable minimum number of HN slots so RSS heavy
-            days don't crowd HN out
+            days don't crowd HN out (HN ingest is retired for this edition,
+            so the reservation is inert and RSS fills the whole pool)
         ─►  insert top-N into the day's "pool" with the first M flagged
             ``included=1`` for the curator's default selection
 
@@ -49,16 +50,16 @@ _HTTP_TIMEOUT_SECONDS = 5
 _RUN_FETCH_WALLCLOCK_SECONDS = 120
 
 CURATION_SYSTEM = """\
-You are a security news curator. Score a Hacker News article for relevance to security
-professionals. You will receive one article and must return a single JSON object with
-a score (0-10) and a brief reason.
+You are a hiking & outdoors news curator. Score an article for relevance to hikers,
+backpackers, and trail-goers. You will receive one article and must return a single
+JSON object with a score (0-10) and a brief reason.
 
 Scoring guide:
-9-10: Direct security impact — active exploits, critical CVEs, major breaches, novel attack research
-7-8:  Important security news — new vulns, security tools, threat intel, malware analysis
-5-6:  Relevant but indirect — privacy news, security policy, interesting research
-3-4:  Tangentially related — general infosec, tech news with security implications
-0-2:  Not security-relevant — general tech, business, politics, entertainment
+9-10: Essential trail news — major trail closures/openings, wildfire impacts on hiking areas, public-lands access changes, long-distance trail (AT/PCT/CDT) updates
+7-8:  Important outdoor news — gear launches & reviews, hiking skills, navigation/mapping updates, conservation wins, destination & route features
+5-6:  Relevant but indirect — outdoor industry announcements, park funding/policy, broader conservation news, community trends
+3-4:  Tangentially related — general outdoor lifestyle, adjacent recreation (camping, climbing) without a hiking angle
+0-2:  Not hiking-relevant — unrelated business, politics, tech, entertainment
 
 Respond with a single valid JSON object only — not a list, and no markdown fences."""
 
@@ -119,46 +120,32 @@ async def _fetch_feed(client: httpx.AsyncClient, endpoint: str,
 
 
 async def fetch_all_candidates() -> list[dict]:
-    """Fetch top and new HN stories, merged and deduplicated by ID."""
-    # ``hn_min_score`` is operator-tunable: e.g., 100 for high-signal-only
-    # days, 25 for slow news days. The "new" feed uses a much lower
-    # threshold (5) since brand-new items haven't had time to accrete
-    # upvotes yet — we'd otherwise miss fresh CVE/0-day posts.
-    min_score = int(db.cfg_get("hn_min_score") or 50)
-    async with httpx.AsyncClient() as client:
-        top, new = await asyncio.gather(
-            _fetch_feed(client, "topstories", _HN_TOP_LIMIT, min_score),
-            _fetch_feed(client, "newstories", _HN_NEW_LIMIT, 5),
-        )
+    """Hacker News ingest is retired for the Trailhead (hiking) edition.
 
-    # An item can appear in both feeds; first-seen wins. We could use a
-    # set comprehension but a manual loop preserves order (top before new).
-    seen: set[int] = set()
-    combined: list[dict] = []
-    for story in top + new:
-        if story["id"] not in seen:
-            seen.add(story["id"])
-            combined.append(story)
-
-    return combined
+    The pipeline now sources stories exclusively from the curated outdoor
+    RSS feeds (Backpacker, Outside, GearJunkie, NPS, AllTrails, …) seeded
+    into ``rss_feeds``. The HN helpers above are kept dormant rather than
+    deleted so the firehose can be re-enabled by returning their output
+    here, but for the trail edition we deliberately emit no HN candidates.
+    """
+    return []
 
 
 # Keyword tables for the offline fallback path. ``_KW_HIGH`` matches
-# words that strongly imply a security story (CVE, exploit, ransomware,
-# etc.) and gets a 7.0 score; ``_KW_MED`` is the broader infosec
-# vocabulary at 5.0. Anything that matches neither lands at 1.0 so it
-# can still be sorted/considered, just very low priority.
+# words that strongly imply a high-value trail/hiking story (closures,
+# wildfire, PCT/AT, etc.) and gets a 7.0 score; ``_KW_MED`` is the broader
+# outdoor vocabulary at 5.0. Anything that matches neither lands at 1.0 so
+# it can still be sorted/considered, just very low priority.
 _KW_HIGH = re.compile(
-    r'\b(cve|exploit|exploited|exploiting|vulnerabilit\w+|breach|breached|malware|'
-    r'ransomware|zero.day|0.day|backdoor|rce|remote.code.execution|xss|sql.injection|'
-    r'injection|attack\w*|hack\w*|compromis\w+|critical|threat\w*|patch\w*|'
-    r'zero.day|trojan|rootkit|keylogger|spyware|botnet|apt|phish\w+|ddos)\b',
+    r'\b(trail\w*|hik\w+|backpack\w*|thru.hike\w*|pct|appalachian|cdt|continental.divide|'
+    r'wildfire\w*|closure\w*|closed|reopen\w*|wilderness|national.park\w*|public.land\w*|'
+    r'forest.service|park.service|npca|permit\w*|conservation|gear|boots?)\b',
     re.IGNORECASE,
 )
 _KW_MED = re.compile(
-    r'\b(security|secur\w+|privacy|authenti\w+|encrypt\w+|ssl|tls|firewall|'
-    r'pentest|infosec|cryptograph\w+|password|token|oauth|certif\w+|mitm|'
-    r'surveillance|worm|supply.chain|credential\w*)\b',
+    r'\b(outdoor\w*|camp\w+|tent\w*|navigation|map\w*|gps|route\w*|summit\w*|'
+    r'mountain\w*|peak\w*|ridge\w*|switchback\w*|footpath\w*|recreation|alltrails|'
+    r'gaia|farout|destination\w*|adventure\w*)\b',
     re.IGNORECASE,
 )
 
@@ -175,7 +162,7 @@ def _keyword_score(articles: list[dict]) -> None:
             elif _KW_MED.search(title):
                 a["relevance_score"], a["relevance_reason"] = 5.0, "keyword match (medium)"
             else:
-                a["relevance_score"], a["relevance_reason"] = 1.0, "no security keywords"
+                a["relevance_score"], a["relevance_reason"] = 1.0, "no hiking keywords"
 
 
 def _parse_curator_json(text: str, article: dict) -> dict:
@@ -334,22 +321,25 @@ def _format_fetch_summary(hn: int, rss: int, new_count: int,
 
     Branches by *why* a fetch produced 0 stored articles, because the operator
     can act on each cause differently:
-      • feeds returned nothing → maybe HN_MIN_SCORE is too high, or RSS feeds are dead
+      • feeds returned nothing → RSS feeds may be dead or unreachable
       • dedup ate everything → normal on a re-fetch of an already-seen day
       • pool already at max_articles → drop articles or raise the cap
       • scoring rejected everything → curation prompt may be too strict
     """
-    if hn == 0 and rss == 0:
-        return "Pulled 0 HN + 0 RSS — feeds returned nothing"
+    # HN ingest is retired for the trail edition, so ``hn`` is always 0; we
+    # report the combined feed total as a single "stories" count.
+    total = hn + rss
+    if total == 0:
+        return "Pulled 0 stories — feeds returned nothing"
     if new_count == 0:
-        return f"Pulled {hn} HN + {rss} RSS → 0 new (all already seen)"
+        return f"Pulled {total} stories → 0 new (all already seen)"
     if stored == 0:
         if pool_full:
-            return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
+            return (f"Pulled {total} stories → {new_count} new "
                     f"but pool already at max_articles cap")
-        return (f"Pulled {hn} HN + {rss} RSS → {new_count} new "
+        return (f"Pulled {total} stories → {new_count} new "
                 f"but all below relevance threshold")
-    return f"Pulled {hn} HN + {rss} RSS → {stored} stored, {included} included"
+    return f"Pulled {total} stories → {stored} stored, {included} included"
 
 
 def _record_fetch_summary(date_str: str, hn: int, rss: int,
@@ -432,7 +422,7 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
     # max+1 so old-and-new ordering remains stable in the curator UI.
     base_position = max((a["position"] for a in existing_articles), default=-1) + 1
 
-    print(f"[fetcher] fetching HN top + new for {date_str} "
+    print(f"[fetcher] fetching outdoor RSS feeds for {date_str} "
           f"(existing pool: {existing_count})")
     candidates = await fetch_all_candidates()
 
@@ -455,7 +445,7 @@ async def _run_fetch_pipeline(newsletter: dict, date_str: str,
             seen_urls.add(url)
             new_stories.append(s)
 
-    print(f"[fetcher] {hn_count} HN + {rss_count} RSS candidates, "
+    print(f"[fetcher] {rss_count} RSS candidates, "
           f"{len(new_stories)} after dedup")
 
     # Early-return: nothing new today. We still record a fetch summary so

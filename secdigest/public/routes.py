@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from secdigest import config, db, mailer
+from secdigest.areas import area_slugs
 from secdigest.web.security import (
     subscribe_allowed, subscribe_record,
     unsubscribe_allowed, unsubscribe_record,
@@ -60,7 +61,7 @@ async def landing(request: Request, msg: str = "", status: str = ""):
 @router.post("/subscribe", response_class=HTMLResponse)
 async def subscribe(request: Request,
                     email: str = Form(...),
-                    cadence: str = Form("daily"),
+                    areas: list[str] = Form(default=[]),
                     website: str = Form("")):
     # Honeypot — real browsers don't fill the hidden 'website' field.
     # Pretend success either way so bots can't probe whether they tripped it.
@@ -86,26 +87,39 @@ async def subscribe(request: Request,
             "message": "That doesn't look like a valid email address.",
             "status": "error",
         }, status_code=400)
-    if cadence not in _VALID_CADENCES:
-        cadence = "daily"
+
+    # Keep only known area slugs (drops tampered values); require at least one.
+    valid_areas = set(area_slugs())
+    chosen_areas = [a for a in dict.fromkeys(areas) if a in valid_areas]
+    if not chosen_areas:
+        return templates.TemplateResponse(request, "landing.html", {
+            "message": "Pick at least one region — Utah, the Poconos, or both.",
+            "status": "error",
+        }, status_code=400)
 
     sub = db.subscriber_get_by_email(email_clean)
 
     # Subscriber-state-dependent response branches all converge on the same
     # thanks.html page so an attacker can't enumerate who's on the list by
     # comparing response bodies. Three cases:
-    #   • already-confirmed → no DB change, no email, render thanks.html
+    #   • already-confirmed → update area prefs only, no email, render thanks.html
     #   • already-pending   → re-issue confirm token, resend the email
     #   • brand new         → create pending row, send confirm email
+    # Area cadence is fixed to 'weekly' (each area sends on Saturday); the
+    # cadence column is vestigial now that subscriber_areas drives delivery.
     already_confirmed = bool(sub and sub.get("confirmed") and sub.get("active"))
 
     if not already_confirmed:
         confirm_token = str(uuid.uuid4())
         if sub:
             db.subscriber_set_confirm_token(sub["id"], confirm_token)
-            db.subscriber_update(sub["id"], cadence=cadence)
+            db.subscriber_update(sub["id"], cadence="weekly")
+            sub_id = sub["id"]
         else:
-            db.subscriber_create_pending(email_clean, cadence, confirm_token)
+            new_sub = db.subscriber_create_pending(email_clean, "weekly", confirm_token)
+            sub_id = new_sub["id"] if new_sub else None
+        if sub_id:
+            db.subscriber_set_areas(sub_id, chosen_areas)
 
         confirm_url = f"{_public_base_url()}/confirm/{confirm_token}"
         ok, smtp_msg = mailer.send_confirmation_email(email_clean, confirm_url)
@@ -118,6 +132,10 @@ async def subscribe(request: Request,
                 "message": "We couldn't send the confirmation email right now. Please try again in a few minutes.",
                 "status": "error",
             }, status_code=503)
+    else:
+        # Already confirmed: let them adjust which regions they follow without
+        # re-confirming. No email, same thanks page — no enumeration signal.
+        db.subscriber_set_areas(sub["id"], chosen_areas)
 
     return templates.TemplateResponse(request, "thanks.html", {
         "email": email_clean,
@@ -131,9 +149,11 @@ async def confirm(request: Request, token: str):
     success, None on an unknown/used token. The template just toggles the
     'ok' UI based on that — no error text leaks whether a token ever existed."""
     sub = db.subscriber_confirm(token)
+    from secdigest.areas import area_name
+    area_labels = [area_name(a) for a in db.subscriber_areas_get(sub["id"])] if sub else []
     return templates.TemplateResponse(request, "confirmed.html", {
         "ok": sub is not None,
-        "cadence": sub["cadence"] if sub else None,
+        "areas": area_labels,
     })
 
 
@@ -200,7 +220,7 @@ async def unsubscribe(request: Request, token: str):
     sub = db.subscriber_get_by_token(token)
     if sub and sub.get("active"):
         db.subscriber_unsubscribe_by_token(token)
-        msg = "You've been unsubscribed from SecDigest."
+        msg = "You've been unsubscribed from Trailhead."
     elif sub:
         msg = "You're already unsubscribed."
     else:

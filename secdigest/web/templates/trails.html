@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Trailhead — Trails{% endblock %}
+{% block content %}
+
+<div class="page-header">
+  <h1 class="page-title">Trails</h1>
+  <p class="page-sub">The pool of curated trails the weekly issue draws from — one random
+    easy/moderate trail is picked per area each Saturday. The weekly job auto-imports fresh
+    hikes from komoot (use <strong>Import from komoot</strong> on the Areas page), and you
+    can add or pause trails by hand here. AllTrails links work too, but AllTrails blocks
+    automatic discovery, so komoot backs the auto-import.</p>
+</div>
+
+<!-- Add trail form -->
+<div class="form-card" style="margin-bottom:28px;">
+  <div class="section-label" style="margin-bottom:14px;">Add Trail</div>
+  <form action="/trails/add" method="post">
+    {{ csrf_input(request) }}
+    <div class="form-row">
+      <div class="form-group" style="flex:0 0 150px">
+        <label class="label">Area</label>
+        <select name="area" class="input">
+          {% for slug in area_slugs %}
+          <option value="{{ slug }}">{{ slug }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group" style="flex:2">
+        <label class="label">Trail name</label>
+        <input type="text" name="name" class="input" required placeholder="Mount Tammany Loop">
+      </div>
+      <div class="form-group" style="flex:0 0 140px">
+        <label class="label">Difficulty</label>
+        <select name="difficulty" class="input">
+          <option value="easy">easy</option>
+          <option value="moderate" selected>moderate</option>
+          <option value="difficult">difficult</option>
+        </select>
+      </div>
+      <div class="form-group" style="flex:0 0 110px">
+        <label class="label">Length (mi)</label>
+        <input type="number" name="length_mi" class="input" value="0" min="0" step="0.1">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:3">
+        <label class="label">Trail URL <span class="text-muted">(komoot or AllTrails)</span></label>
+        <input type="url" name="alltrails_url" class="input"
+               placeholder="https://www.komoot.com/smarttour/...">
+      </div>
+      <div class="form-group" style="flex:4">
+        <label class="label">Blurb <span class="text-muted">(optional)</span></label>
+        <input type="text" name="blurb" class="input" placeholder="Ridge views over the Water Gap.">
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary btn-sm">+ Add Trail</button>
+  </form>
+</div>
+
+{% for g in grouped %}
+<div class="section-label" style="margin-top:18px;">{{ g.area.name }}
+  <span class="text-muted">({{ g.trails|length }} trails)</span></div>
+{% if g.trails %}
+<table class="table">
+  <thead>
+    <tr><th>Trail</th><th>Difficulty</th><th>Length</th><th>Status</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for t in g.trails %}
+    <tr class="{% if not t.active %}row-muted{% endif %}">
+      <td>
+        <div style="font-weight:600;color:var(--text)">{{ t.name }}</div>
+        {% if t.alltrails_url %}
+        <div class="text-muted mono" style="font-size:0.8em;"><a href="{{ t.alltrails_url }}" target="_blank" rel="noopener">{{ t.alltrails_url }}</a></div>
+        {% endif %}
+        {% if t.blurb %}<div class="text-muted" style="font-size:0.82em;">{{ t.blurb }}</div>{% endif %}
+      </td>
+      <td><span class="badge badge-{{ 'green' if t.difficulty == 'easy' else 'blue' if t.difficulty == 'moderate' else 'gray' }}">{{ t.difficulty }}</span></td>
+      <td class="mono">{{ '%g'|format(t.length_mi) }} mi</td>
+      <td><span class="badge badge-{{ 'green' if t.active else 'gray' }}">{{ 'active' if t.active else 'paused' }}</span></td>
+      <td>
+        <div class="btn-group">
+          <form action="/trails/{{ t.id }}/toggle" method="post" style="display:inline">
+            {{ csrf_input(request) }}
+            <button type="submit" class="btn btn-sm btn-ghost">{{ '⏸ Pause' if t.active else '▶ Resume' }}</button>
+          </form>
+          <form action="/trails/{{ t.id }}/delete" method="post" style="display:inline"
+                onsubmit="return confirm('Remove this trail?')">
+            {{ csrf_input(request) }}
+            <button type="submit" class="btn btn-sm btn-ghost btn-danger">✕</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state"><p>No trails yet for {{ g.area.name }} — add one above or import from komoot.</p></div>
+{% endif %}
+{% endfor %}
+
+{% endblock %}

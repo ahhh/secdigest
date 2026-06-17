@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}SecDigest — {{ kind_label }} {{ period_start }}{% endblock %}
+{% block title %}Trailhead — {{ kind_label }} {{ period_start }}{% endblock %}
 {% block content %}
 
 <div class="page-header">
@@ -82,7 +82,7 @@
           <label class="label">Subject line</label>
           <input type="text" name="subject" id="tmpl-subject" class="input"
                  value="{{ active_subject }}"
-                 placeholder="SecDigest {{ kind_label }} — {{ period_start }}">
+                 placeholder="Trailhead {{ kind_label }} — {{ period_start }}">
         </div>
         <div class="form-group" style="margin-bottom:8px;">
           <label class="checkbox-label">
@@ -188,7 +188,7 @@ function reloadPreview() {
     <div class="article-drag-handle">&#x28BF;</div>
     <div class="article-body">
       <div class="article-meta">
-        <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
+        <span class="relevance-score" title="Hiking relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
         <span class="text-muted mono" style="font-size:.85em;">from {{ a.source_date }}</span>
         {% if kind == 'weekly' and a.pin_weekly %}
         <span class="badge badge-blue" style="font-size:.7em;">pinned</span>

@@ -1,38 +1,16 @@
 {% extends "base.html" %}
-{% block title %}SecDigest — RSS Feeds{% endblock %}
+{% block title %}Trailhead — RSS Feeds{% endblock %}
 {% block content %}
 
 <div class="page-header">
   <h1 class="page-title">Feeds</h1>
-  <p class="page-sub">Sources are pulled in this order: Hacker News (top + new) followed by each active RSS feed.
-    A minimum number of HN slots is reserved in the daily pool so RSS-heavy days don't crowd HN out.</p>
-</div>
-
-<!-- Source-mix settings -->
-<div class="form-card" style="margin-bottom:20px;">
-  <div class="section-label" style="margin-bottom:14px;">Hacker News pull settings</div>
-  <form action="/feeds/hn-pool-min" method="post">
-    {{ csrf_input(request) }}
-    <div class="form-row">
-      <div class="form-group" style="flex:0 0 240px">
-        <label class="label">Minimum HN articles in daily pool</label>
-        <input type="number" name="hn_pool_min" class="input" value="{{ hn_pool_min }}"
-               min="0" max="50" required>
-      </div>
-      <div class="form-group" style="flex:1;align-self:end;">
-        <button type="submit" class="btn btn-primary btn-sm">Save</button>
-      </div>
-    </div>
-    <p class="text-muted" style="font-size:.8em;margin:6px 0 0;line-height:1.5;">
-      The top N HN articles by relevance are reserved before RSS articles compete for the rest of the pool.
-      Set to <code>0</code> to disable the reservation entirely. Capped at the overall pool size in Settings.
-    </p>
-  </form>
+  <p class="page-sub">Every story comes from the active outdoor/hiking RSS feeds below
+    (Backpacker, Outside, GearJunkie, the Park Service, AllTrails and more). Add, pause,
+    or remove sources here — the daily fetch pulls candidates from each active feed.</p>
 </div>
 
 <!-- Add feed form -->
 <div class="form-card" style="margin-bottom:28px;">
-  <div class="section-label" style="margin-bottom:14px;">RSS feeds</div>
   <div class="section-label" style="margin-bottom:14px;">Add Feed</div>
   <form action="/feeds/add" method="post">
     {{ csrf_input(request) }}
@@ -40,11 +18,11 @@
       <div class="form-group" style="flex:3">
         <label class="label">Feed URL <span class="text-muted">(RSS or Atom)</span></label>
         <input type="url" name="url" class="input" required
-               placeholder="https://example.com/feed.xml">
+               placeholder="https://www.backpacker.com/feed/">
       </div>
       <div class="form-group" style="flex:2">
         <label class="label">Name <span class="text-muted">(optional)</span></label>
-        <input type="text" name="name" class="input" placeholder="Krebs on Security">
+        <input type="text" name="name" class="input" placeholder="Backpacker Magazine">
       </div>
       <div class="form-group" style="flex:0 0 120px">
         <label class="label">Max articles</label>

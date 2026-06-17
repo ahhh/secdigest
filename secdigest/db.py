@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS email_templates (
     id           INTEGER PRIMARY KEY,
     name         TEXT    NOT NULL,
     description  TEXT    DEFAULT '',
-    subject      TEXT    NOT NULL DEFAULT 'SecDigest — {date}',
+    subject      TEXT    NOT NULL DEFAULT 'Trailhead — {date}',
     html         TEXT    NOT NULL,
     article_html TEXT    NOT NULL,
     header_html  TEXT    DEFAULT '',
@@ -193,35 +193,120 @@ CREATE TABLE IF NOT EXISTS voice_audio (
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Curated trail list backing the per-area "random trail" pick. AllTrails has
+-- no public API and blocks server-side fetches, so trails are entered by the
+-- operator (name + AllTrails link + difficulty/length). ``area`` is an area
+-- slug from secdigest.areas.AREAS. The weekly build picks one random row with
+-- difficulty in ('easy','moderate') and active=1 for the issue's area.
+CREATE TABLE IF NOT EXISTS trails (
+    id            INTEGER PRIMARY KEY,
+    area          TEXT    NOT NULL,
+    name          TEXT    NOT NULL,
+    alltrails_url TEXT    DEFAULT '',
+    difficulty    TEXT    NOT NULL DEFAULT 'moderate',
+    length_mi     REAL    DEFAULT 0,
+    blurb         TEXT    DEFAULT '',
+    active        INTEGER DEFAULT 1,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Many-to-many: which areas a subscriber follows. A subscriber can pick one or
+-- both areas at signup; they receive one Saturday issue per area listed here.
+-- Replaces the single ``cadence`` column as the primary delivery selector
+-- (cadence is kept but vestigial). ON DELETE CASCADE keeps rows clean when a
+-- subscriber is removed.
+CREATE TABLE IF NOT EXISTS subscriber_areas (
+    subscriber_id INTEGER NOT NULL REFERENCES subscribers(id) ON DELETE CASCADE,
+    area          TEXT    NOT NULL,
+    PRIMARY KEY (subscriber_id, area)
+);
 """
 
 DEFAULT_PROMPTS = [
     {
-        "name": "Security Relevance Filter",
+        "name": "Trail Relevance Filter",
         "type": "curation",
         "content": (
-            "Score each article for relevance to security professionals on a scale of 0-10.\n"
-            "HIGH relevance (7-10): CVEs, exploits, malware, threat intel, security tools, "
-            "vulnerabilities, incident reports, privacy breaches, cryptography research, "
-            "pentesting, red team techniques, supply chain attacks, zero-days.\n"
-            "MEDIUM relevance (4-6): Privacy policy changes, government/legal actions on tech companies, "
-            "general infosec news, interesting but non-critical security research.\n"
-            "LOW relevance (0-3): General tech news, business news, non-security programming, "
-            "AI hype without security angle, sports/politics/entertainment."
+            "Score each article for relevance to hikers and backpackers on a scale of 0-10.\n"
+            "HIGH relevance (7-10): trail closures/reopenings, wildfire impacts on hiking areas, "
+            "public-lands access changes, long-distance trail (AT/PCT/CDT) updates, hiking gear "
+            "launches and reviews, hiking skills, navigation/mapping, conservation wins, "
+            "destination and route features.\n"
+            "MEDIUM relevance (4-6): outdoor industry announcements, park funding/policy, broader "
+            "conservation news, community and trend pieces.\n"
+            "LOW relevance (0-3): general outdoor lifestyle with no hiking angle, adjacent recreation "
+            "without trail relevance, unrelated business/tech/politics/entertainment."
         ),
     },
     {
-        "name": "Technical Summary Style",
+        "name": "Trail Summary Style",
         "type": "summary",
         "content": (
-            "Write a concise 2-3 sentence summary for a security professional audience. "
+            "Write a concise 2-3 sentence summary for a hiking and backpacking audience. "
             "Always produce a summary regardless of article type — never refuse. "
-            "For vulnerabilities: include CVE IDs, affected versions, severity, and mitigations. "
-            "For opinion or discussion pieces: capture the core argument and its security relevance. "
-            "For tools or research: describe what it does and why it matters. "
-            "Be factual and direct. No fluff, no marketing language."
+            "For trail/access news: note which trail or park, what changed, and what it means for hikers. "
+            "For gear: what it is, the standout feature, and who it's for. "
+            "For skills or destination features: the key takeaway and what to expect on the ground. "
+            "Be factual and vivid. No marketing fluff."
         ),
     },
+]
+
+# Outdoor/hiking RSS sources seeded on a fresh DB. These replace the old
+# Hacker News firehose — the fetcher pulls candidates exclusively from here
+# now. URLs are best-known feed endpoints; the operator can verify, edit,
+# disable, or add feeds from the admin Feeds page if any publisher moves or
+# renames its feed. ``max_articles`` caps how many items we take off each
+# feed per fetch so one prolific publisher can't dominate the daily pool.
+DEFAULT_FEEDS = [
+    # ── Industry & Outdoor News ──
+    {"name": "Backpacker Magazine", "url": "https://www.backpacker.com/feed/", "max_articles": 6},
+    {"name": "Outside Online",      "url": "https://www.outsideonline.com/rss/", "max_articles": 6},
+    {"name": "Adventure Journal",   "url": "https://www.adventure-journal.com/feed/", "max_articles": 5},
+    {"name": "GearJunkie",          "url": "https://gearjunkie.com/feed", "max_articles": 6},
+    # ── Conservation & Public Lands ──
+    {"name": "NPCA",                "url": "https://www.npca.org/articles.rss", "max_articles": 5},
+    {"name": "National Park Service News", "url": "https://www.nps.gov/orgs/1207/rss.htm", "max_articles": 5},
+    {"name": "U.S. Forest Service Newsroom", "url": "https://www.fs.usda.gov/news/releases/rss", "max_articles": 5},
+    # ── Trail Conditions & User Trends ──
+    {"name": "AllTrails Blog",      "url": "https://www.alltrails.com/blog/feed/", "max_articles": 5},
+    {"name": "FarOut Guides Blog",  "url": "https://faroutguides.com/blog/feed/", "max_articles": 5},
+    {"name": "Gaia GPS Blog",       "url": "https://www.gaiagps.com/news/feed/", "max_articles": 5},
+]
+
+# Curated easy/moderate trails seeded per area on a fresh DB. These back the
+# weekly "random trail" pick. AllTrails URLs are best-effort and SHOULD be
+# verified (and expanded) by the operator on the admin Trails page — AllTrails
+# blocks programmatic access, so we can't validate them automatically.
+# ``area`` values must match slugs in secdigest.areas.AREAS.
+DEFAULT_TRAILS = [
+    # ── Utah ──
+    {"area": "utah", "name": "Delicate Arch Trail", "difficulty": "moderate", "length_mi": 3.2,
+     "alltrails_url": "https://www.alltrails.com/trail/us/utah/delicate-arch-trail",
+     "blurb": "The iconic arch in Arches NP — steep slickrock with a payoff view."},
+    {"area": "utah", "name": "Mesa Arch Trail", "difficulty": "easy", "length_mi": 0.7,
+     "alltrails_url": "https://www.alltrails.com/trail/us/utah/mesa-arch-trail",
+     "blurb": "A short loop to a cliff-edge arch framing Canyonlands at sunrise."},
+    {"area": "utah", "name": "Donut Falls", "difficulty": "easy", "length_mi": 3.0,
+     "alltrails_url": "https://www.alltrails.com/trail/us/utah/donut-falls-trail",
+     "blurb": "Family-friendly Big Cottonwood Canyon walk to a tucked-away waterfall."},
+    {"area": "utah", "name": "Bell Canyon Lower Falls", "difficulty": "moderate", "length_mi": 4.6,
+     "alltrails_url": "https://www.alltrails.com/trail/us/utah/lower-bell-canyon-trail",
+     "blurb": "Wasatch front classic — reservoir, forest, and a seasonal waterfall."},
+    # ── The Poconos ──
+    {"area": "poconos", "name": "Mount Tammany (Red Dot/Blue Dot)", "difficulty": "moderate", "length_mi": 3.5,
+     "alltrails_url": "https://www.alltrails.com/trail/us/new-jersey/mount-tammany-red-dot-blue-dot-loop-trail",
+     "blurb": "Loop with sweeping Delaware Water Gap views from the ridge."},
+    {"area": "poconos", "name": "Hawk Falls Trail", "difficulty": "easy", "length_mi": 1.2,
+     "alltrails_url": "https://www.alltrails.com/trail/us/pennsylvania/hawk-falls-trail",
+     "blurb": "Short Hickory Run State Park stroll to a 25-foot waterfall."},
+    {"area": "poconos", "name": "Mount Minsi via Appalachian Trail", "difficulty": "moderate", "length_mi": 4.4,
+     "alltrails_url": "https://www.alltrails.com/trail/us/pennsylvania/mount-minsi-via-appalachian-trail",
+     "blurb": "AT out-and-back across the Gap from Tammany with overlooks."},
+    {"area": "poconos", "name": "Tobyhanna Lake Trail", "difficulty": "easy", "length_mi": 5.1,
+     "alltrails_url": "https://www.alltrails.com/trail/us/pennsylvania/tobyhanna-lake-trail",
+     "blurb": "Flat, scenic loop around Tobyhanna Lake — good for all levels."},
 ]
 
 _TMPL_DARK_HTML = """\
@@ -229,13 +314,13 @@ _TMPL_DARK_HTML = """\
 <body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',monospace;">
 <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px;">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:680px;">
-<tr><td style="padding-bottom:24px;border-bottom:2px solid #39ff14;">
-<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#39ff14;">SecDigest</span>
+<tr><td style="padding-bottom:24px;border-bottom:2px solid #52b788;">
+<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#52b788;">Trailhead</span>
 <span style="color:#6e7681;margin-left:12px;font-size:.9em;">{date}</span>
 </td></tr>
 {articles}
 <tr><td style="padding-top:24px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to Trailhead. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -253,14 +338,14 @@ _TMPL_LIGHT_HTML = """\
 <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px;">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:640px;background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
 <tr><td style="padding:28px 32px 20px;border-bottom:3px solid #0969da;">
-<span style="font-size:1.4em;font-weight:700;color:#0969da;letter-spacing:-0.5px;">SecDigest</span>
+<span style="font-size:1.4em;font-weight:700;color:#0969da;letter-spacing:-0.5px;">Trailhead</span>
 <span style="color:#8c959f;margin-left:10px;font-size:.875em;">{date}</span>
 </td></tr>
 <tr><td style="padding:0 32px;">
 <table width="100%" cellpadding="0" cellspacing="0">{articles}</table>
 </td></tr>
 <tr><td style="padding:20px 32px 28px;font-size:.75em;color:#8c959f;border-top:1px solid #e1e4e8;">
-{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to Trailhead. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#8c959f;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -278,12 +363,12 @@ _TMPL_MINIMAL_HTML = """\
 <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:40px 20px;">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;">
 <tr><td style="padding-bottom:24px;border-bottom:1px solid #cccccc;">
-<strong style="font-size:1.2em;color:#111111;">SecDigest</strong>
+<strong style="font-size:1.2em;color:#111111;">Trailhead</strong>
 <span style="color:#888888;margin-left:10px;font-size:.9em;">{date}</span>
 </td></tr>
 {articles}
 <tr><td style="padding-top:32px;font-size:.75em;color:#aaaaaa;border-top:1px solid #eeeeee;">
-{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to Trailhead. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#aaaaaa;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -300,8 +385,8 @@ _TMPL_GRID_HTML = """\
 <body style="margin:0;padding:0;background:#0d1117;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
 <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 16px;">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:700px;">
-<tr><td style="padding-bottom:20px;border-bottom:2px solid #39ff14;">
-<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#39ff14;">SecDigest</span>
+<tr><td style="padding-bottom:20px;border-bottom:2px solid #52b788;">
+<span style="font-family:monospace;font-size:1.6em;font-weight:700;color:#52b788;">Trailhead</span>
 <span style="color:#6e7681;margin-left:12px;font-size:.9em;">{date}</span>
 </td></tr>
 <tr><td style="padding-top:14px;">
@@ -310,7 +395,7 @@ _TMPL_GRID_HTML = """\
 </table>
 </td></tr>
 <tr><td style="padding-top:20px;font-size:.75em;color:#6e7681;border-top:1px solid #21262d;">
-{feedback_block}You're receiving this because you subscribed to SecDigest. &nbsp;&middot;&nbsp;
+{feedback_block}You're receiving this because you subscribed to Trailhead. &nbsp;&middot;&nbsp;
 <a href="{unsubscribe_url}" style="color:#6e7681;">Unsubscribe</a>
 </td></tr>
 </table></td></tr></table></body></html>"""
@@ -346,22 +431,22 @@ _TMPL_MOBILE_DARK_HTML = """\
 <meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
 <meta name="color-scheme" content="dark">
 <meta name="supported-color-schemes" content="dark">
-<title>SecDigest — {date}</title>
+<title>Trailhead — {date}</title>
 </head>
 <body style="margin:0;padding:0;background:#0d1117;-webkit-text-size-adjust:100%;" bgcolor="#0d1117">
 <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:#0d1117;">
-SecDigest daily &mdash; {date} &middot; top security stories, summarised.
+Trailhead daily &mdash; {date} &middot; trail news, gear & conservation, summarised.
 </div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0d1117" style="background:#0d1117;">
 <tr><td align="center" style="padding:20px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;">
-<tr><td style="padding:6px 4px 18px;border-bottom:2px solid #39ff14;">
-<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:22px;font-weight:700;color:#39ff14;letter-spacing:-.5px;line-height:1.2;">SecDigest</div>
+<tr><td style="padding:6px 4px 18px;border-bottom:2px solid #52b788;">
+<div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:22px;font-weight:700;color:#52b788;letter-spacing:-.5px;line-height:1.2;">Trailhead</div>
 <div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:#6e7681;margin-top:6px;"><span style="color:#6e7681;">{date}</span></div>
 </td></tr>
 {articles}
 <tr><td style="padding:24px 4px 12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7681;border-top:1px solid #21262d;">
-{feedback_block}You're receiving this because you subscribed to SecDigest.<br>
+{feedback_block}You're receiving this because you subscribed to Trailhead.<br>
 <a href="{unsubscribe_url}" style="color:#58a6ff;text-decoration:underline;">Unsubscribe</a>
 </td></tr>
 </table>
@@ -383,17 +468,17 @@ _TMPL_MOBILE_LIGHT_HTML = """\
 <meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
 <meta name="color-scheme" content="light">
 <meta name="supported-color-schemes" content="light">
-<title>SecDigest — {date}</title>
+<title>Trailhead — {date}</title>
 </head>
 <body style="margin:0;padding:0;background:#f6f8fa;-webkit-text-size-adjust:100%;" bgcolor="#f6f8fa">
 <div style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;color:#f6f8fa;">
-SecDigest daily &mdash; {date} &middot; top security stories, summarised.
+Trailhead daily &mdash; {date} &middot; trail news, gear & conservation, summarised.
 </div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f8fa" style="background:#f6f8fa;">
 <tr><td align="center" style="padding:20px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;">
 <tr><td style="padding:24px 20px 18px;border-bottom:3px solid #0969da;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
-<div style="font-size:22px;font-weight:700;color:#0969da;letter-spacing:-.5px;line-height:1.2;">SecDigest</div>
+<div style="font-size:22px;font-weight:700;color:#0969da;letter-spacing:-.5px;line-height:1.2;">Trailhead</div>
 <div style="font-size:13px;color:#6e7781;margin-top:6px;">{date}</div>
 </td></tr>
 <tr><td style="padding:0 20px;">
@@ -402,7 +487,7 @@ SecDigest daily &mdash; {date} &middot; top security stories, summarised.
 </table>
 </td></tr>
 <tr><td style="padding:18px 20px 22px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.6;color:#6e7781;border-top:1px solid #e1e4e8;background:#fafbfc;" bgcolor="#fafbfc">
-{feedback_block}You're receiving this because you subscribed to SecDigest.<br>
+{feedback_block}You're receiving this because you subscribed to Trailhead.<br>
 <a href="{unsubscribe_url}" style="color:#0969da;text-decoration:underline;">Unsubscribe</a>
 </td></tr>
 </table>
@@ -419,8 +504,8 @@ _TMPL_MOBILE_LIGHT_ARTICLE = """\
 DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Dark Terminal",
-        "description": "Dark background with monospace font and green accent. Matches the SecDigest app aesthetic.",
-        "subject": "SecDigest — {date}",
+        "description": "Dark background with monospace font and green accent. Matches the Trailhead app aesthetic.",
+        "subject": "Trailhead — {date}",
         "html": _TMPL_DARK_HTML,
         "article_html": _TMPL_DARK_ARTICLE,
         "is_builtin": 1,
@@ -428,7 +513,7 @@ DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Clean Light",
         "description": "White background, blue header, professional sans-serif style.",
-        "subject": "SecDigest — {date}",
+        "subject": "Trailhead — {date}",
         "html": _TMPL_LIGHT_HTML,
         "article_html": _TMPL_LIGHT_ARTICLE,
         "is_builtin": 1,
@@ -436,7 +521,7 @@ DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Minimal",
         "description": "Plain white with serif font. No heavy styling — lets the content speak.",
-        "subject": "SecDigest — {date}",
+        "subject": "Trailhead — {date}",
         "html": _TMPL_MINIMAL_HTML,
         "article_html": _TMPL_MINIMAL_ARTICLE,
         "is_builtin": 1,
@@ -444,7 +529,7 @@ DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "2-Column Grid",
         "description": "Dark theme with articles in a 2-column card grid. Best for shorter summaries.",
-        "subject": "SecDigest — {date}",
+        "subject": "Trailhead — {date}",
         "html": _TMPL_GRID_HTML,
         "article_html": _TMPL_GRID_ARTICLE,
         "is_builtin": 1,
@@ -452,7 +537,7 @@ DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Mobile Dark",
         "description": "Mobile-first dark layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
-        "subject": "SecDigest — {date}",
+        "subject": "Trailhead — {date}",
         "html": _TMPL_MOBILE_DARK_HTML,
         "article_html": _TMPL_MOBILE_DARK_ARTICLE,
         "is_builtin": 1,
@@ -460,7 +545,7 @@ DEFAULT_EMAIL_TEMPLATES = [
     {
         "name": "Mobile Light",
         "description": "Mobile-first light layout tuned for Gmail iOS — fluid width, large tap targets, preheader text.",
-        "subject": "SecDigest — {date}",
+        "subject": "Trailhead — {date}",
         "html": _TMPL_MOBILE_LIGHT_HTML,
         "article_html": _TMPL_MOBILE_LIGHT_ARTICLE,
         "is_builtin": 1,
@@ -494,6 +579,8 @@ def init_db():
         # because each guards against existing rows.
         _seed_config(conn)
         _seed_prompts(conn)
+        _seed_rss_feeds(conn)
+        _seed_trails(conn)
         _seed_email_templates(conn)
         # Forward-only migrations. Each is internally idempotent —
         # the order matters only for migrations that depend on prior ones.
@@ -532,6 +619,33 @@ def _seed_prompts(conn):
             conn.execute(
                 "INSERT INTO prompts(name, type, content) VALUES (?,?,?)",
                 (p["name"], p["type"], p["content"])
+            )
+        conn.commit()
+
+
+def _seed_rss_feeds(conn):
+    """Seed the built-in outdoor/hiking feeds on a fresh DB. Skipped once any
+    feed exists so an operator's edits (or deletions) are never reintroduced.
+    ``INSERT OR IGNORE`` additionally guards the UNIQUE(url) constraint."""
+    if conn.execute("SELECT COUNT(*) FROM rss_feeds").fetchone()[0] == 0:
+        for f in DEFAULT_FEEDS:
+            conn.execute(
+                "INSERT OR IGNORE INTO rss_feeds(url, name, max_articles) VALUES (?,?,?)",
+                (f["url"], f["name"], f["max_articles"])
+            )
+        conn.commit()
+
+
+def _seed_trails(conn):
+    """Seed the built-in curated trails on a fresh DB. Skipped once any trail
+    exists so the operator's edits/deletions are never reintroduced."""
+    if conn.execute("SELECT COUNT(*) FROM trails").fetchone()[0] == 0:
+        for t in DEFAULT_TRAILS:
+            conn.execute(
+                "INSERT INTO trails(area, name, alltrails_url, difficulty, length_mi, blurb) "
+                "VALUES (?,?,?,?,?,?)",
+                (t["area"], t["name"], t["alltrails_url"], t["difficulty"],
+                 t["length_mi"], t["blurb"]),
             )
         conn.commit()
 
@@ -721,7 +835,7 @@ def _migrate_add_grid_template(conn):
             "VALUES (?,?,?,?,?,?)",
             ("2-Column Grid",
              "Dark theme with articles in a 2-column card grid. Best for shorter summaries.",
-             "SecDigest — {date}",
+             "Trailhead — {date}",
              _TMPL_GRID_HTML, _TMPL_GRID_ARTICLE, 1),
         )
         conn.commit()
@@ -746,7 +860,7 @@ def _migrate_add_mobile_templates(conn):
             conn.execute(
                 "INSERT INTO email_templates(name, description, subject, html, article_html, is_builtin) "
                 "VALUES (?,?,?,?,?,1)",
-                (name, desc, "SecDigest — {date}", body, article),
+                (name, desc, "Trailhead — {date}", body, article),
             )
             changed = True
     if changed:
@@ -815,10 +929,10 @@ def _migrate_builtin_template_feedback(conn):
         # built-in template since the unsubscribe migration landed; placing the
         # placeholder right before it keeps feedback buttons visually adjacent
         # to the unsubscribe link in the footer.
-        if "You're receiving this because you subscribed to SecDigest" in row[1]:
+        if "You're receiving this because you subscribed to Trailhead" in row[1]:
             new_html = row[1].replace(
-                "You're receiving this because you subscribed to SecDigest",
-                "{feedback_block}You're receiving this because you subscribed to SecDigest",
+                "You're receiving this because you subscribed to Trailhead",
+                "{feedback_block}You're receiving this because you subscribed to Trailhead",
                 1,
             )
             conn.execute("UPDATE email_templates SET html=? WHERE id=?", (new_html, row[0]))
@@ -833,8 +947,8 @@ def _migrate_builtin_template_unsubscribe(conn):
     for row in rows:
         if "{unsubscribe_url}" not in row[1]:
             new_html = row[1].replace(
-                "You're receiving this because you subscribed to SecDigest.",
-                "You're receiving this because you subscribed to SecDigest."
+                "You're receiving this because you subscribed to Trailhead.",
+                "You're receiving this because you subscribed to Trailhead."
                 " &nbsp;&middot;&nbsp; "
                 '<a href="{unsubscribe_url}" style="color:inherit;opacity:0.7;">Unsubscribe</a>',
             )
@@ -1073,6 +1187,36 @@ def article_all_urls() -> set[str]:
         "SELECT url FROM articles WHERE url IS NOT NULL AND url != ''"
     ).fetchall()
     return {r[0] for r in rows}
+
+
+def article_delete_by_source(newsletter_id: int, source: str):
+    """Delete all articles of a given source within one newsletter. Used by the
+    area-issue builder to drop the previous weather card before inserting a
+    freshly fetched one, so rebuilds don't accumulate stale forecasts."""
+    with _lock:
+        _get_conn().execute(
+            "DELETE FROM articles WHERE newsletter_id=? AND source=?",
+            (newsletter_id, source),
+        )
+        _get_conn().commit()
+
+
+def article_delete(article_id: int):
+    """Delete a single article by id. Used by the area editor to remove a trip
+    card. digest_articles rows referencing it cascade via ON DELETE CASCADE."""
+    with _lock:
+        _get_conn().execute("DELETE FROM articles WHERE id=?", (article_id,))
+        _get_conn().commit()
+
+
+def article_has_source(newsletter_id: int, source: str) -> bool:
+    """True when the newsletter already has at least one article of this source.
+    Lets the builder avoid re-rolling the trail pick on every rebuild."""
+    row = _get_conn().execute(
+        "SELECT 1 FROM articles WHERE newsletter_id=? AND source=? LIMIT 1",
+        (newsletter_id, source),
+    ).fetchone()
+    return row is not None
 
 
 def article_set_pin(article_id: int, period: str, pinned: bool):
@@ -1400,6 +1544,58 @@ def subscriber_confirm(token: str) -> dict | None:
     ).fetchone())
 
 
+# ── Subscriber areas (Utah / Poconos) ─────────────────────────────────────────
+
+def subscriber_set_areas(subscriber_id: int, areas: list[str]):
+    """Replace a subscriber's area subscriptions. Unknown slugs are dropped so
+    a tampered form can't seed garbage rows. Delete-then-insert keeps the set
+    exactly in sync with the submitted selection."""
+    # Lazy import avoids a circular dependency (areas.py imports db).
+    from secdigest.areas import area_slugs
+    valid = set(area_slugs())
+    clean = [a for a in dict.fromkeys(areas) if a in valid]  # dedupe, preserve order
+    with _lock:
+        conn = _get_conn()
+        with conn:
+            conn.execute("DELETE FROM subscriber_areas WHERE subscriber_id=?", (subscriber_id,))
+            for area in clean:
+                conn.execute(
+                    "INSERT OR IGNORE INTO subscriber_areas(subscriber_id, area) VALUES (?,?)",
+                    (subscriber_id, area),
+                )
+
+
+def subscriber_areas_get(subscriber_id: int) -> list[str]:
+    rows = _get_conn().execute(
+        "SELECT area FROM subscriber_areas WHERE subscriber_id=? ORDER BY area",
+        (subscriber_id,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def subscriber_areas_map() -> dict[int, list[str]]:
+    """{subscriber_id: [areas]} in one pass — for the admin subscribers table."""
+    rows = _get_conn().execute(
+        "SELECT subscriber_id, area FROM subscriber_areas ORDER BY subscriber_id, area"
+    ).fetchall()
+    out: dict[int, list[str]] = {}
+    for r in rows:
+        out.setdefault(r[0], []).append(r[1])
+    return out
+
+
+def subscriber_active_for_area(area: str) -> list[dict]:
+    """Active, confirmed subscribers who follow the given area. This is the
+    delivery list for an area's Saturday issue."""
+    rows = _get_conn().execute(
+        """SELECT s.* FROM subscribers s
+           JOIN subscriber_areas sa ON sa.subscriber_id = s.id
+           WHERE s.active=1 AND s.confirmed=1 AND sa.area=?""",
+        (area,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── Feedback (signal / noise) ────────────────────────────────────────────────
 
 def feedback_record(subscriber_id: int, newsletter_id: int, vote: str) -> None:
@@ -1686,3 +1882,96 @@ def rss_feed_delete(id: int):
     with _lock:
         _get_conn().execute("DELETE FROM rss_feeds WHERE id=?", (id,))
         _get_conn().commit()
+
+
+# ── Trails (curated per-area picks) ───────────────────────────────────────────
+
+def trail_list(area: str | None = None) -> list[dict]:
+    if area:
+        rows = _get_conn().execute(
+            "SELECT * FROM trails WHERE area=? ORDER BY active DESC, name", (area,)
+        ).fetchall()
+    else:
+        rows = _get_conn().execute(
+            "SELECT * FROM trails ORDER BY area, active DESC, name"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def trail_create(area: str, name: str, alltrails_url: str = "",
+                 difficulty: str = "moderate", length_mi: float = 0,
+                 blurb: str = "") -> dict | None:
+    try:
+        with _lock:
+            cur = _get_conn().execute(
+                "INSERT INTO trails(area, name, alltrails_url, difficulty, length_mi, blurb) "
+                "VALUES (?,?,?,?,?,?)",
+                (area, name, alltrails_url, difficulty, length_mi, blurb),
+            )
+            _get_conn().commit()
+        return dict(_get_conn().execute("SELECT * FROM trails WHERE id=?", (cur.lastrowid,)).fetchone())
+    except Exception:
+        return None
+
+
+def trail_update(id: int, **kwargs):
+    if not kwargs:
+        return
+    allowed = {"active", "area", "name", "alltrails_url", "difficulty", "length_mi", "blurb"}
+    bad = set(kwargs) - allowed
+    if bad:
+        raise ValueError(f"trail_update: disallowed columns {bad}")
+    fields = ", ".join(f"{k}=?" for k in kwargs)  # nosec B608 — keys pre-validated against allowlist
+    with _lock:
+        _get_conn().execute(f"UPDATE trails SET {fields} WHERE id=?", [*kwargs.values(), id])  # nosec B608
+        _get_conn().commit()
+
+
+def trail_delete(id: int):
+    with _lock:
+        _get_conn().execute("DELETE FROM trails WHERE id=?", (id,))
+        _get_conn().commit()
+
+
+def trail_exists(area: str, alltrails_url: str) -> bool:
+    """True when a trail with this URL already exists for the area. Used by the
+    komoot importer to dedupe so weekly refreshes don't pile up duplicates."""
+    if not alltrails_url:
+        return False
+    row = _get_conn().execute(
+        "SELECT 1 FROM trails WHERE area=? AND alltrails_url=? LIMIT 1",
+        (area, alltrails_url),
+    ).fetchone()
+    return row is not None
+
+
+def trail_random(area: str, exclude_id: int | None = None) -> dict | None:
+    """Pick one random active easy/moderate trail for the area, or None when the
+    area has no eligible trails. ``exclude_id`` avoids repeating last week's pick
+    when the pool has more than one option. ORDER BY RANDOM() is fine here."""
+    if exclude_id:
+        row = _get_conn().execute(
+            "SELECT * FROM trails WHERE area=? AND active=1 AND id!=? "
+            "AND difficulty IN ('easy','moderate') ORDER BY RANDOM() LIMIT 1",
+            (area, exclude_id),
+        ).fetchone()
+        if row:
+            return dict(row)
+        # fall through: only the excluded trail is eligible — use it anyway.
+    row = _get_conn().execute(
+        "SELECT * FROM trails WHERE area=? AND active=1 "
+        "AND difficulty IN ('easy','moderate') ORDER BY RANDOM() LIMIT 1",
+        (area,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def area_list_url_get(slug: str) -> str:
+    """Optional per-area AllTrails list/profile URL the operator curates. We
+    don't fetch it (AllTrails blocks bots) — it's surfaced as a 'full list'
+    link in the issue and admin. Stored in config_kv under area_list_url_<slug>."""
+    return cfg_get(f"area_list_url_{slug}")
+
+
+def area_list_url_set(slug: str, url: str):
+    cfg_set(f"area_list_url_{slug}", url)

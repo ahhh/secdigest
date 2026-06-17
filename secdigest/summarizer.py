@@ -37,15 +37,16 @@ _MAX_REDIRECTS = 5
 # can append extra rules at runtime via the prompts table — see
 # ``_summary_instructions`` below.
 SUMMARY_SYSTEM = """\
-You are writing summaries for a daily security newsletter read by security professionals.
+You are writing summaries for a hiking & outdoors newsletter read by hikers and backpackers.
 You MUST always write a summary — never refuse, never say you cannot access a URL.
 Article text is fetched for you and provided below. If no text is available, write from the title alone.
 Every article gets exactly 2-3 sentences. Adapt to the content type:
-- Vulnerability / CVE: what it is, who is affected, severity, CVE ID and mitigations if known
-- Tool / research: what it does, the key technical insight, and why it matters
-- Opinion / discussion: the core argument, its security relevance, and the key takeaway
-- Compliance / policy: what changed, who it affects, and the practical implication
-Be precise and direct. No marketing language, no hedging, no preamble.
+- Trail / access news: what changed (closure, reopening, wildfire, permit), which trail or park, and what it means for hikers
+- Gear: what the product is, the standout feature, and who it's for
+- Skills / how-to: the core technique and the key takeaway
+- Conservation / policy: what changed, which lands it affects, and the practical implication
+- Destination / route feature: where it is, why it's notable, and what to expect on the ground
+Be precise and vivid but factual. No marketing fluff, no hedging, no preamble.
 Respond with the summary text only."""
 
 
@@ -74,7 +75,7 @@ def _fetch_article_text(url: str, max_chars: int = 1500) -> str:
         # content" because Blogger issues 30x for canonical/consent flows
         # and the prior follow_redirects=False silently dropped the response.
         with httpx.Client(follow_redirects=False, timeout=8,
-                          headers={"User-Agent": "Mozilla/5.0 (compatible; SecDigest/1.0)"}) as client:
+                          headers={"User-Agent": "Mozilla/5.0 (compatible; Trailhead/1.0)"}) as client:
             current = url
             resp = None
             for _ in range(_MAX_REDIRECTS + 1):
@@ -158,7 +159,7 @@ def summarize_article(article_id: int) -> str | None:
         instructions,
         f"Title: {article['title']}",
         f"URL: {article.get('url', '')}",
-        f"HN score: {article.get('hn_score', 0)} | Comments: {article.get('hn_comments', 0)}",
+        f"Source: {article.get('source_name') or 'outdoor feed'}",
         f"\nArticle content:\n{article_text}" if article_text
             else "\n(Article text could not be fetched — summarise from title and context.)",
     ]))

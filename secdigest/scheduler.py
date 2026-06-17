@@ -10,13 +10,14 @@ the fetcher already exposes async I/O — sharing the loop avoids spawning
 a separate scheduler thread. A module-level ``_scheduler`` singleton is
 fine here: only one scheduler should exist per process.
 """
-from datetime import date as dt_date
+import asyncio
+from datetime import date as dt_date, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from secdigest import db
-from secdigest import fetcher, summarizer, mailer
+from secdigest import fetcher, summarizer, mailer, areas
 
 # Module-level singleton; populated by start_scheduler() and reused by
 # reschedule()/stop_scheduler(). ``None`` means "not started yet".
@@ -59,6 +60,43 @@ async def daily_job():
         print(f"[scheduler] auto-send: {msg}")
 
 
+async def weekly_area_job():
+    """Saturday pipeline: build each area's weekly issue (refresh weather, ensure
+    a trail pick) and, if auto_send is on, email it to that area's subscribers.
+
+    The issue's window is the coming week — Saturday (today) through the
+    following Friday — so the 7-day forecast covers the week ahead. Building is
+    blocking (httpx to NWS), so it runs in a worker thread to keep the event
+    loop free."""
+    today = dt_date.today()
+    week_start = today.isoformat()
+    week_end = (today + timedelta(days=6)).isoformat()
+    print(f"[scheduler] weekly area job for week {week_start}…{week_end}")
+    auto_send = db.cfg_get("auto_send") == "1"
+    for area in areas.AREAS:
+        slug = area["slug"]
+        # Refresh the trail pool from komoot first (best-effort) so each week's
+        # random pick can draw from freshly discovered hikes.
+        try:
+            added = await asyncio.to_thread(areas.refresh_area_trails, slug)
+            print(f"[scheduler] komoot import {slug}: +{added} trails")
+        except Exception as e:
+            print(f"[scheduler] komoot import error for {slug}: {e}")
+        try:
+            await asyncio.to_thread(areas.build_area_issue, slug, week_start, week_end)
+        except Exception as e:
+            print(f"[scheduler] build error for {slug}: {e}")
+            continue
+        if auto_send:
+            try:
+                ok, msg = await asyncio.to_thread(
+                    mailer.send_newsletter, week_start, slug
+                )
+                print(f"[scheduler] auto-send {slug}: {msg}")
+            except Exception as e:
+                print(f"[scheduler] send error for {slug}: {e}")
+
+
 def _parse_time(t: str) -> tuple[int, int]:
     """Parse a 'HH:MM' string. Falls back to 07:00 on any malformed input
     so a typo in the settings page can't crash the scheduler."""
@@ -86,8 +124,17 @@ def start_scheduler() -> AsyncIOScheduler:
         id="daily_fetch",
         replace_existing=True,
     )
+    # Weekly per-area issue build + send, fired every Saturday at weekly_send_time.
+    whour, wminute = _parse_time(db.cfg_get("weekly_send_time") or "08:00")
+    _scheduler.add_job(
+        weekly_area_job,
+        CronTrigger(day_of_week="sat", hour=whour, minute=wminute),
+        id="weekly_areas",
+        replace_existing=True,
+    )
     _scheduler.start()
-    print(f"[scheduler] daily fetch at {hour:02d}:{minute:02d}")
+    print(f"[scheduler] daily fetch at {hour:02d}:{minute:02d}; "
+          f"weekly areas Sat {whour:02d}:{wminute:02d}")
     return _scheduler
 
 

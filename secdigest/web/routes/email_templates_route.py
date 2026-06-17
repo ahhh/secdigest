@@ -58,7 +58,7 @@ async def create_template(
     request: Request,
     name: str = Form(...),
     description: str = Form(""),
-    subject: str = Form("SecDigest — {date}"),
+    subject: str = Form("Trailhead — {date}"),
     html: str = Form(...),
     article_html: str = Form(...),
 ):
@@ -74,7 +74,7 @@ async def save_template(
     template_id: int,
     name: str = Form(...),
     description: str = Form(""),
-    subject: str = Form("SecDigest — {date}"),
+    subject: str = Form("Trailhead — {date}"),
     html: str = Form(...),
     article_html: str = Form(...),
 ):

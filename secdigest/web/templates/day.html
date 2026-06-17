@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}SecDigest — {{ date_str }}{% endblock %}
+{% block title %}Trailhead — {{ date_str }}{% endblock %}
 {% block content %}
 
 <div class="page-header">
@@ -133,7 +133,7 @@
           <label class="label">Subject line</label>
           <input type="text" name="subject" id="tmpl-subject" class="input"
                  value="{{ active_subject }}"
-                 placeholder="SecDigest — {{ date_str }}">
+                 placeholder="Trailhead — {{ date_str }}">
         </div>
         <div class="form-group" style="margin-bottom:8px;">
           <label class="checkbox-label">
@@ -309,7 +309,7 @@ function saveExisting() {
   appendFields(form, {
     name:         document.getElementById('edit-name').value,
     description:  currentTemplateData.description || '',
-    subject:      currentTemplateData.subject || 'SecDigest — {date}',
+    subject:      currentTemplateData.subject || 'Trailhead — {date}',
     html:         document.getElementById('edit-html').value,
     article_html: document.getElementById('edit-article-html').value,
   });
@@ -331,7 +331,7 @@ function saveAsNew() {
   appendFields(form, {
     name:         name,
     description:  '',
-    subject:      currentTemplateData.subject || 'SecDigest — {date}',
+    subject:      currentTemplateData.subject || 'Trailhead — {date}',
     html:         document.getElementById('edit-html').value,
     article_html: document.getElementById('edit-article-html').value,
   });
@@ -357,8 +357,8 @@ function appendFields(form, fields) {
 <div class="empty-state">
   {% if fetching %}
   <div class="empty-icon">&#x27F3;</div>
-  <p>Pulling from Hacker News and active RSS feeds&hellip;</p>
-  <p class="text-muted" style="font-size:0.85em">This takes about a minute while articles are rated for security relevance.</p>
+  <p>Pulling from the active outdoor RSS feeds&hellip;</p>
+  <p class="text-muted" style="font-size:0.85em">This takes about a minute while articles are rated for hiking relevance.</p>
   {% else %}
   <div class="empty-icon">&#x25CE;</div>
   <p>No articles yet for {{ date_str }}.</p>
@@ -388,7 +388,7 @@ function appendFields(form, fields) {
                               else ('Manual' if a.source == 'manual'
                                     else (a.source_name or 'RSS feed'))) %}
         <div class="article-meta">
-          <span class="relevance-score" title="Security relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
+          <span class="relevance-score" title="Hiking relevance">&#x25B2; {{ "%.1f"|format(a.relevance_score) }}</span>
           {% if a.source == 'hn' and a.hn_id %}
           <span class="hn-score">HN {{ a.hn_score }}</span>
           <span class="hn-comments">{{ a.hn_comments }} comments</span>

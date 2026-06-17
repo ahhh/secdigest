@@ -145,7 +145,7 @@ async def day_view(request: Request, date_str: str):
             (t for t in email_templates if t["id"] == active_template_id),
             email_templates[0] if email_templates else None,
         )
-        active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"SecDigest — {date_str}"
+        active_subject = tmpl["subject"].replace("{date}", date_str) if tmpl else f"Trailhead — {date_str}"
     active_toc = db.newsletter_get_toc(newsletter["id"]) if newsletter else False
     active_header = db.newsletter_get_header(newsletter["id"]) if newsletter else False
     active_voice = db.newsletter_get_voice_enabled(newsletter["id"]) if newsletter else False

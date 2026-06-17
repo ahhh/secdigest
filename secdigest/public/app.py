@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
 # advertising internal route shapes to crawlers.
 app = FastAPI(
     lifespan=lifespan,
-    title="SecDigest",
+    title="Trailhead",
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
