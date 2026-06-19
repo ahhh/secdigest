@@ -55,6 +55,17 @@ PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "0.0.0.0")
 PUBLIC_PORT = int(os.environ.get("PUBLIC_PORT", "8000"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
 
+# ── Cloudflare Turnstile (signup CAPTCHA) ───────────────────────────────────
+# Optional bot challenge on the public /subscribe form. Both values come from
+# the Cloudflare dashboard's Turnstile widget. The site key is public (it gets
+# rendered into the landing-page HTML); the secret key must stay server-side and
+# is the input to the siteverify call. When EITHER is unset the feature is OFF
+# and the subscribe flow behaves exactly as before — the honeypot + per-IP rate
+# limit + double opt-in still apply. Keeping it env-sourced (not DB-backed) keeps
+# the secret out of the SQLite file and matches the other process secrets above.
+TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY", "")
+TURNSTILE_SECRET_KEY = os.environ.get("TURNSTILE_SECRET_KEY", "")
+
 # ── TLS (uvicorn-direct HTTPS) ──────────────────────────────────────────────
 # Defaults to ON. When enabled, run.py passes the cert+key paths through to
 # uvicorn so both the admin and public apps serve HTTPS directly. To disable

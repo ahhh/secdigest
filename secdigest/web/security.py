@@ -15,7 +15,10 @@ import socket
 from time import time
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import Request
+
+from secdigest import config
 
 
 def is_safe_external_url(url: str) -> bool:
@@ -171,3 +174,53 @@ def feedback_allowed(request: Request) -> bool:
 
 def feedback_record_attempt(request: Request) -> None:
     _bucket_record(_FEEDBACK_ATTEMPTS, _client_ip(request), _FEEDBACK_WINDOW_SECONDS)
+
+
+# ── Cloudflare Turnstile (signup CAPTCHA) ───────────────────────────────────
+#
+# A bot challenge layered on top of the honeypot + rate limit. The browser
+# widget hands back a one-time token in the ``cf-turnstile-response`` form
+# field; we hand that token + our secret to Cloudflare's siteverify endpoint,
+# which confirms the challenge was actually solved by this client.
+
+_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+_TURNSTILE_TIMEOUT_SECONDS = 5.0
+
+
+def turnstile_enabled() -> bool:
+    """True only when BOTH the site key and secret key are configured. The
+    template uses this to decide whether to render the widget, and ``turnstile_verify``
+    uses it to no-op when the feature is off (dev, tests, operators not using it)."""
+    return bool(config.TURNSTILE_SITE_KEY and config.TURNSTILE_SECRET_KEY)
+
+
+def turnstile_verify(request: Request, token: str) -> bool:
+    """Verify a Turnstile token server-side. Returns True iff Cloudflare confirms
+    the challenge was solved.
+
+    Disabled (unconfigured) → always True, so the subscribe flow and the test
+    suite work without any Cloudflare keys. Enabled but missing/invalid token, or
+    any verification error (network hiccup, Cloudflare 5xx, malformed JSON) → False:
+    we fail *closed* so a bot can't bypass the gate by inducing an error, and the
+    honeypot + rate limit + double opt-in still backstop a legit user who retries.
+    Sync ``httpx.post`` mirrors the blocking SMTP send already done in this route."""
+    if not turnstile_enabled():
+        return True
+    if not token:
+        return False
+    try:
+        resp = httpx.post(
+            _TURNSTILE_VERIFY_URL,
+            data={
+                "secret": config.TURNSTILE_SECRET_KEY,
+                "response": token,
+                # remoteip is optional but tightens the check to this client.
+                "remoteip": _client_ip(request),
+            },
+            timeout=_TURNSTILE_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return bool(resp.json().get("success"))
+    except Exception as exc:
+        print(f"[public] turnstile verification error: {exc}")
+        return False

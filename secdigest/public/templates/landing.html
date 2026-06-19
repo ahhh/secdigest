@@ -6,6 +6,9 @@
   <title>secdigest // signal from the wire</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  {% if turnstile_enabled %}
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  {% endif %}
 </head>
 <body>
   <div class="scanlines" aria-hidden="true"></div>
@@ -84,6 +87,10 @@
             <input type="text" name="website" tabindex="-1" autocomplete="off">
           </label>
         </div>
+
+        {% if turnstile_enabled %}
+        <div class="cf-turnstile" data-sitekey="{{ turnstile_sitekey }}" data-theme="dark"></div>
+        {% endif %}
 
         <button type="submit" class="btn">&gt;&gt; subscribe</button>
 

@@ -19,6 +19,7 @@ from secdigest.web.security import (
     subscribe_allowed, subscribe_record,
     unsubscribe_allowed, unsubscribe_record,
     feedback_allowed, feedback_record_attempt,
+    turnstile_enabled, turnstile_verify,
 )
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -49,19 +50,33 @@ def _public_base_url() -> str:
     return "http://localhost:8000"
 
 
+def _landing_ctx(*, message=None, status="info") -> dict:
+    """Build the landing.html context. Centralised so every render path — the
+    GET and each error branch in /subscribe — carries the Turnstile fields and
+    the widget shows up consistently (including when a user retries after a
+    validation error)."""
+    return {
+        "message": message,
+        "status": status,
+        "turnstile_enabled": turnstile_enabled(),
+        "turnstile_sitekey": config.TURNSTILE_SITE_KEY,
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 async def landing(request: Request, msg: str = "", status: str = ""):
-    return templates.TemplateResponse(request, "landing.html", {
-        "message": msg or None,
-        "status": status or "info",
-    })
+    return templates.TemplateResponse(
+        request, "landing.html",
+        _landing_ctx(message=msg or None, status=status or "info"),
+    )
 
 
 @router.post("/subscribe", response_class=HTMLResponse)
 async def subscribe(request: Request,
                     email: str = Form(...),
                     cadence: str = Form("daily"),
-                    website: str = Form("")):
+                    website: str = Form(""),
+                    turnstile_token: str = Form("", alias="cf-turnstile-response")):
     # Honeypot — real browsers don't fill the hidden 'website' field.
     # Pretend success either way so bots can't probe whether they tripped it.
     if website.strip():
@@ -70,11 +85,24 @@ async def subscribe(request: Request,
         })
 
     if not subscribe_allowed(request):
-        return templates.TemplateResponse(request, "landing.html", {
-            "message": "Too many attempts from your network. Try again in an hour.",
-            "status": "error",
-        }, status_code=429)
+        return templates.TemplateResponse(
+            request, "landing.html",
+            _landing_ctx(
+                message="Too many attempts from your network. Try again in an hour.",
+                status="error",
+            ), status_code=429)
     subscribe_record(request)
+
+    # CAPTCHA gate — checked after the (cheap, in-memory) rate limit so the
+    # outbound siteverify call is itself shielded from being hammered. No-op
+    # when Turnstile isn't configured.
+    if not turnstile_verify(request, turnstile_token):
+        return templates.TemplateResponse(
+            request, "landing.html",
+            _landing_ctx(
+                message="Couldn't verify you're human. Please complete the check and try again.",
+                status="error",
+            ), status_code=400)
 
     # Strip CRLF + NUL out of the email *before* it can land in any
     # SMTP header or DB field. mailer.py will sanitize again at the
@@ -82,10 +110,12 @@ async def subscribe(request: Request,
     # malformed value. 254 = SMTP's hard cap on email length.
     email_clean = (email or "").strip().lower().replace("\r", "").replace("\n", "").replace("\x00", "")
     if len(email_clean) > 254 or not _EMAIL_RE.match(email_clean):
-        return templates.TemplateResponse(request, "landing.html", {
-            "message": "That doesn't look like a valid email address.",
-            "status": "error",
-        }, status_code=400)
+        return templates.TemplateResponse(
+            request, "landing.html",
+            _landing_ctx(
+                message="That doesn't look like a valid email address.",
+                status="error",
+            ), status_code=400)
     if cadence not in _VALID_CADENCES:
         cadence = "daily"
 
@@ -114,10 +144,12 @@ async def subscribe(request: Request,
             # error text to the user (info leak) and don't differentiate from
             # the success page in a way that leaks subscription state.
             print(f"[public] confirmation email failed for {email_clean}: {smtp_msg}")
-            return templates.TemplateResponse(request, "landing.html", {
-                "message": "We couldn't send the confirmation email right now. Please try again in a few minutes.",
-                "status": "error",
-            }, status_code=503)
+            return templates.TemplateResponse(
+                request, "landing.html",
+                _landing_ctx(
+                    message="We couldn't send the confirmation email right now. Please try again in a few minutes.",
+                    status="error",
+                ), status_code=503)
 
     return templates.TemplateResponse(request, "thanks.html", {
         "email": email_clean,
